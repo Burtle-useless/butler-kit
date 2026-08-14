@@ -1,0 +1,29 @@
+butler-kit
+Copyright (c) 2026 butler-kit contributors
+
+本專案（MIT 授權，見 LICENSE）散布時包含下列第三方元件。
+
+
+-------------------------------------------------------------------------------
+OpenCC 轉換字典
+-------------------------------------------------------------------------------
+
+路徑：app/app/src/main/assets/opencc/
+    STCharacters.txt      STPhrases.txt
+    TSCharacters.txt      TSPhrases.txt
+    TWPhrases.txt         TWPhrasesRev.txt
+    TWVariants.txt        TWVariantsPhrases.txt
+
+來源：Open Chinese Convert (OpenCC)
+      https://github.com/BYVoid/OpenCC
+
+Copyright 2010-2020 Carbo Kuo (BYVoid) and OpenCC contributors
+
+以 Apache License 2.0 授權，全文見 licenses/Apache-2.0.txt。
+
+檔案從上游 data/dictionary/ 複製為 Android assets，內容未經修改。
+（TWPhrases.txt 與 TWPhrasesRev.txt 取自較早的上游版本，比目前的 master
+少一組互為反查的詞條；差異來自上游後續新增，非本專案所改。其餘六個檔與
+master 逐位元組相同。）
+
+App 端只讀這些字典做簡繁轉換，未連結 OpenCC 的程式碼。

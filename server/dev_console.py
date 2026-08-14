@@ -5,7 +5,7 @@ HTTP 服務、不接任何手機，光靠這支就該能跑完一個完整回合
 這是 Phase 1 的成功條件之一，跑不過就代表 engine 沒抽乾淨。
 
 用法：
-    set PYTHONPATH=C:\\Users\\you\\Desktop\\Claude\\butler\\server
+    set PYTHONPATH=C:\\path\\to\\butler-kit\\server
     python dev_console.py "列出目前目錄的檔案"
 """
 from __future__ import annotations

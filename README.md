@@ -53,3 +53,8 @@
 ## 授權
 
 MIT。
+
+`app/app/src/main/assets/opencc/` 底下的簡繁字典來自
+[OpenCC](https://github.com/BYVoid/OpenCC)，以 Apache License 2.0 授權，
+未經修改。歸屬說明見 [`NOTICE`](NOTICE)，授權全文見
+[`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt)。
