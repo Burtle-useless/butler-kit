@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  允許對 tailnet 位址走明文 HTTP。
+
+  這不是偷懶關掉 TLS：連線本身已經在 WireGuard 層被加密，且 100.64.0.0/10 是
+  Tailscale 的 CGNAT 網段，封包只在 tailnet 內部流動、不會經過公開網際網路。
+  在上面再疊一層 TLS 只會多出自簽憑證的信任問題，安全性沒有實質增加。
+
+  ⚠️ 這份是**編譯期**資源，執行期換不了，而且**不支援 CIDR**——寫不了
+  「整個 100.64.0.0/10 放行」，位址要逐一列出。所以預設只列 ts.net
+  （Tailscale 的 MagicDNS 網域，includeSubdomains 涵蓋所有人的 tailnet）：
+  這樣換電腦、重裝 Tailscale、位址變動都不必回來改這個檔重編 APK。
+
+  不走 Tailscale 的情況：
+  - 同一區網明文 HTTP → 在下面加一筆 <domain>192.168.x.x</domain>，
+    每換一次網段就要重編。
+  - 自己有網域與正式憑證 → 整個 domain-config 區塊刪掉即可，
+    base-config 本來就只信任系統憑證。
+
+  base-config 維持 cleartextTrafficPermitted="false"，其餘目的地一律禁止明文。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Tailscale MagicDNS 網域，位址變動仍能解析 -->
+        <domain includeSubdomains="true">ts.net</domain>
+    </domain-config>
+</network-security-config>

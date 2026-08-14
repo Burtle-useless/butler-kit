@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 與 Theme.kt 的 Palette.Bg 對齊。啟動畫面若跟 App 內色溫不同，
+         進 App 會有一瞬間的斷層。
+         （上一版這裡留著暖灰 #1C1A18，是暖色系時期的遺留，方向剛好相反。） -->
+    <color name="bg">#0B0F17</color>
+    <!-- 圖示底色刻意比 Bg 亮一階（等同 Palette.Surface），
+         全黑底在深色桌布上會整個糊掉，機體白框需要一點對比才浮得起來。 -->
+    <color name="ic_launcher_bg">#121826</color>
+</resources>

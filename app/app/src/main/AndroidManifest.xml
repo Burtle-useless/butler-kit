@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 13+ 通知要執行期授權；沒有它助理在背景做完事你不會知道 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 前景服務：App 進背景後維持 SSE，否則系統會掐斷連線 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- specialUse 而不是 dataSync：targetSdk 35 起，dataSync 型的前景服務
+         一天只能累計跑 6 小時，滿了系統呼叫 onTimeout()，之後連 startForegroundService
+         都會被拒（ForegroundServiceStartNotAllowedException）。助理的背景連線是
+         「整天都要在」的東西，那個額度等於每天下半天就失聯。specialUse 沒有時間上限，
+         代價是上 Google Play 要向 Google 說明用途——助理是側載的，不上架。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 電池最佳化白名單的請求入口（Doze 會延遲甚至凍結背景連線） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- 鬧鐘 -->
+    <!-- USE_EXACT_ALARM 是 Android 13+ 給「核心功能就是鬧鐘」的 app 用的，安裝即生效、
+         不必請使用者去設定裡開。SCHEDULE_EXACT_ALARM 則是 12/12L 的舊路。
+         少了它們 setAlarmClock 會被降級成不精準排程——鬧鐘晚十分鐘響等於沒響。 -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <!-- 鎖屏時把響鈴畫面直接拉起來 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- 響鈴服務要播聲音 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 重開機後把鬧鐘排回去 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 面對面翻譯要聽麥克風 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Android 11 起的 package visibility：沒有這兩個 queries，
+         SpeechRecognizer.isRecognitionAvailable() 與 TextToSpeech 都會找不到系統服務，
+         而且是**靜默**失敗（回 false／init 失敗），不會有任何錯誤訊息。 -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".ButlerApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.Butler">
+
+        <!-- windowSoftInputMode 的 stateAlwaysHidden：進 App 一律不彈鍵盤。
+             程式碼裡沒有任何 requestFocus，自動彈是系統在 Activity 重建時
+             還原了輸入框的焦點狀態。這個旗標不影響使用者主動點輸入框開鍵盤。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".notify.ButlerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <!-- specialUse 一定要附這個 property 說明用途，缺了它服務起不來 -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="持續訂閱使用者自己電腦上的事件流，把工作結果與提問即時推到手機" />
+        </service>
+
+        <!-- ── 鬧鐘 ────────────────────────────────────────────────────
+             響鈴畫面獨立成一個 Activity 而不是 MainActivity 的一個畫面：
+             它要能蓋在鎖屏上、要能自己點亮螢幕，這些是 Activity 層級的屬性。
+             excludeFromRecents：關掉之後不要留在最近使用清單裡當殭屍。 -->
+        <activity
+            android:name=".alarm.RingActivity"
+            android:exported="false"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=".alarm"
+            android:theme="@style/Theme.Butler" />
+
+        <!-- ── 面對面翻譯 ──────────────────────────────────────────────
+             獨立 Activity 而不是第六個底部分頁：底欄五個字已經滿了，而這個畫面要
+             全螢幕、要大字、要壓著螢幕不休眠，那些是 Activity 層級的事。
+             跟 RingActivity 同一個理由。 -->
+        <activity
+            android:name=".voice.TalkActivity"
+            android:exported="false"
+            android:label="面對面翻譯"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.Butler" />
+
+        <service
+            android:name=".alarm.RingService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <receiver
+            android:name=".alarm.AlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".alarm.BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- 更新 App 也會清掉排程，一併補回來 -->
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

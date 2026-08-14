@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 只影響啟動畫面與系統列；畫面本身的配色由 Compose 的 MaterialTheme 負責 -->
+    <style name="Theme.Butler" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+</resources>

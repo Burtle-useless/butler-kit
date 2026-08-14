@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 桌面顯示名與通知標題。改成你自己的助理叫什麼。 -->
+    <string name="app_name">Butler</string>
+</resources>
