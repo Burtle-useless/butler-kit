@@ -1,33 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  啟動圖示：助理的螢幕臉。
+  啟動圖示：助理的螢幕臉，報紙單色插畫版（2026-08-19 跟著整套視覺換）。
+  方角、墨線框、墨黑螢幕、紙色負片眼睛——跟 App 內 PetBot 的畫法一致。
   桌寵本體是 Compose Canvas 手繪，launcher 吃的是 VectorDrawable 的 pathData，
   沒辦法直接沿用程式碼，所以這裡把同一張臉的幾何重畫一次。
 
-  尺寸紀律（上一版就是栽在這裡）：畫布 108x108，但只有**中央直徑 66 的圓**
-  是各家遮罩都保證看得到的範圍。上一版機體寬 74，超出後左右被裁掉，
-  白框變成一條橫貫的白帶、上下露出背景圓，非常難看。
-  現在機體收到 52x38（角落到中心 32.2 < 33），四角都在安全圓內。
+  尺寸紀律（更早的版本栽過）：畫布 108x108，但只有**中央直徑 66 的圓**
+  是各家遮罩都保證看得到的範圍。機體 52x38 置中（角落到中心 32.2 < 33），
+  四角都在安全圓內。
+
+  墨線框的畫法：先鋪實心墨塊、再用紙色挖回內部——vector 的 stroke 是騎在
+  路徑中線上的，直接畫 stroke 會有半條線超出幾何範圍，兩塊實心疊出來的框
+  才是準的。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 機體外框 -->
+    <!-- 墨線外框 -->
     <path
-        android:pathData="M36,35 h36 a8,8 0 0 1 8,8 v22 a8,8 0 0 1 -8,8 h-36 a8,8 0 0 1 -8,-8 v-22 a8,8 0 0 1 8,-8 z"
-        android:fillColor="#EDF0F5" />
-    <!-- 螢幕 -->
+        android:pathData="M28,35 h52 v38 h-52 z"
+        android:fillColor="#1A1A1A" />
+    <!-- 機體紙面（框線留 2.5） -->
     <path
-        android:pathData="M39,40 h30 a5,5 0 0 1 5,5 v18 a5,5 0 0 1 -5,5 h-30 a5,5 0 0 1 -5,-5 v-18 a5,5 0 0 1 5,-5 z"
-        android:fillColor="#0E1420" />
-    <!-- 左眼 -->
+        android:pathData="M30.5,37.5 h47 v33 h-47 z"
+        android:fillColor="#FBFAF5" />
+    <!-- 墨黑螢幕 -->
     <path
-        android:pathData="M43,49 h6 a2.5,2.5 0 0 1 2.5,2.5 v5 a2.5,2.5 0 0 1 -2.5,2.5 h-6 a2.5,2.5 0 0 1 -2.5,-2.5 v-5 a2.5,2.5 0 0 1 2.5,-2.5 z"
-        android:fillColor="#5CCFE6" />
+        android:pathData="M34.5,41.5 h39 v25 h-39 z"
+        android:fillColor="#1A1A1A" />
+    <!-- 左眼：紙色，微圓角（跟 App 內的眼睛一致，全方眼會像像素圖） -->
+    <path
+        android:pathData="M45,49 h5 a2,2 0 0 1 2,2 v6 a2,2 0 0 1 -2,2 h-5 a2,2 0 0 1 -2,-2 v-6 a2,2 0 0 1 2,-2 z"
+        android:fillColor="#FBFAF5" />
     <!-- 右眼 -->
     <path
-        android:pathData="M59,49 h6 a2.5,2.5 0 0 1 2.5,2.5 v5 a2.5,2.5 0 0 1 -2.5,2.5 h-6 a2.5,2.5 0 0 1 -2.5,-2.5 v-5 a2.5,2.5 0 0 1 2.5,-2.5 z"
-        android:fillColor="#5CCFE6" />
+        android:pathData="M58,49 h5 a2,2 0 0 1 2,2 v6 a2,2 0 0 1 -2,2 h-5 a2,2 0 0 1 -2,-2 v-6 a2,2 0 0 1 2,-2 z"
+        android:fillColor="#FBFAF5" />
 </vector>

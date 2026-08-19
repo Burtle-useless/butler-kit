@@ -18,7 +18,6 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     StreamEvent,
-    SystemMessage,
     TaskNotificationMessage,
     TaskStartedMessage,
     ToolUseBlock,
@@ -27,9 +26,9 @@ from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 
 import config
-from protocol import Frontend, make_event
+from protocol import COALESCABLE, Frontend, make_event
 
-from . import client_pool, usage
+from . import client_pool, diag, usage
 from .fold import (
     NO_RESPONSE,
     clean_reply,
@@ -89,17 +88,33 @@ class _DeltaBuffer:
 
     delta 產生速率遠高於手機消化速率，逐則送會在弱網下把前端淹掉，
     ring buffer 也會被灌爆導致續傳視窗變得極短。這裡按時間窗合併後再送。
+
+    時間窗一定要自己顧。先前 `DELTA_COALESCE_MS` 定義了卻沒有任何地方讀，
+    flush 只掛在每 2 秒一次的狀態心跳上——逐字串流因此是**兩秒一大塊**地跳出來，
+    不是打字機而是幻燈片。設定是死的，症狀卻只看得出「串流有點頓」，
+    對著 config 檢查也不會發現，因為那個數字看起來完全正常。
     """
 
     def __init__(self, frontend: Frontend, conv_id: str, turn_id: str) -> None:
         self._fe = frontend
         self._conv, self._turn = conv_id, turn_id
-        self._buf: dict[str, list[str]] = {"thinking.delta": [], "text.delta": []}
+        # 型別清單取自 COALESCABLE，不要在這裡另寫一份。那個常數原本零使用端，
+        # 而它旁邊的註解寫著「這幾類事件量大且可合併」——看起來是它在決定，
+        # 實際上決定權在這一行，改常數不會有任何效果。
+        self._buf: dict[str, list[str]] = {k: [] for k in COALESCABLE}
+        self._last = time.monotonic()
+        self._window = config.DELTA_COALESCE_MS / 1000.0
 
     def add(self, type_: str, d: str) -> None:
         self._buf[type_].append(d)
 
+    async def maybe_flush(self) -> None:
+        """距上次送出超過合併窗才真的送。每個 delta 之後呼叫，成本只是一次減法。"""
+        if time.monotonic() - self._last >= self._window:
+            await self.flush()
+
     async def flush(self) -> None:
+        self._last = time.monotonic()
         for type_, parts in self._buf.items():
             if not parts:
                 continue
@@ -122,6 +137,8 @@ async def run_turn(
     """
     conv = state.conv_id
     start = time.time()
+    ctx_before = state.ctx_tokens     # 用來認出 CLI 中途壓縮過（見下面的驟降判斷）
+    ctx_usage: dict[str, Any] = {}    # 回合結束時向 SDK 問到的權威 context 數字
     messages: list[Any] = []
     tool_count = 0
     pending_question: dict = {}
@@ -215,17 +232,14 @@ async def run_turn(
                             live_think += d
                             all_think += d
                             deltas.add("thinking.delta", d)
+                        await deltas.maybe_flush()
                     continue
                 messages.append(message)
-                # CLI 自己的 auto-compact：回合跑到一半 context 撐爆時，CLI 就地把前文
-                # 換成摘要再接著跑，不會中斷這個回合，也不會有任何錯誤。butler 的
-                # _maybe_compact 只在回合**開始前**估算，中途暴衝（連讀幾個大檔就夠）
-                # 攔不到，只能像這樣事後知道它發生過，交給 turn.py 回頭核對。
-                if (
-                    isinstance(message, SystemMessage)
-                    and getattr(message, "subtype", "") == "compact_boundary"
-                ):
-                    compacted[0] = True
+                # CLI 自己的 auto-compact 偵測**不在這裡**，在迴圈結束後比對 context
+                # 驟降。先前這個位置擋的是 `SystemMessage(subtype="compact_boundary")`，
+                # 而 SDK 根本不送這種訊息：已查遍 _internal/message_parser.py 全檔沒有它，
+                # 只在 _internal/sessions.py 讀 jsonl 的註解裡出現過。也就是說這條防線
+                # 從寫下來的第一天就沒生效過——34 次壓縮只核對到 1 次。
                 # 背景任務記帳：純粹為了讓狀態心跳帶上，不影響收工判斷
                 if isinstance(message, TaskStartedMessage):
                     pending_bg[message.task_id] = message.description or ""
@@ -270,6 +284,14 @@ async def run_turn(
                 if isinstance(message, AssistantMessage):
                     saw_assistant[0] = True   # 上面的孤兒判準靠這個旗標，漏設會把自己的回合也跳掉
                     await _commit_step(message)
+            # 回合跑完，順手向 CLI 問一次 context 的權威數字。
+            # butler 原本靠模型名稱字串比對去猜上限（opus → 1M），而實測
+            # rawMaxTokens=200000、autoCompactThreshold=167000——猜錯五倍的結果是
+            # 主動壓縮的門檻算成 85 萬，永遠到不了，34 次壓縮全是 CLI 在回合中途硬切。
+            try:
+                ctx_usage.update(await client.get_context_usage() or {})
+            except Exception:
+                pass      # 問不到就退回估算。這是錦上添花，不能讓它拖垮整個回合
         except Exception:
             # 長駐 client 可能已損壞（連線斷／進程死）→ 丟棄，下次重建並 resume 接回
             await client_pool.drop(conv)
@@ -319,6 +341,22 @@ async def run_turn(
     content, new_sid, ctx = fold_messages(messages)
     if ctx:
         state.ctx_tokens = ctx
+    # 權威值蓋過估算。三個數字各有用途：
+    #   totalTokens          → 現在用掉多少（比 result 的估算準）
+    #   rawMaxTokens         → 真正的上限，App 的用量長條要拿它當分母
+    #   autoCompactThreshold → CLI 會自己動手的門檻，我們得搶在它前面
+    total = int(ctx_usage.get("totalTokens") or 0)
+    if total:
+        state.ctx_tokens = total
+    if int(ctx_usage.get("rawMaxTokens") or 0):
+        state.ctx_max = int(ctx_usage["rawMaxTokens"])
+    if int(ctx_usage.get("autoCompactThreshold") or 0):
+        state.ctx_threshold = int(ctx_usage["autoCompactThreshold"])
+    # CLI 在這一輪中途壓縮過嗎。context 只會往上長，唯一會讓它掉下來的就是壓縮，
+    # 所以「顯著變小」是可靠的事後判準（取代那個從來沒生效的 compact_boundary）。
+    # 抓 0.6 而不是「只要變小就算」：留點餘裕給估算與權威值換算之間的抖動。
+    if ctx_before and total and total < ctx_before * 0.6:
+        compacted[0] = True
     # 續跑判定要用「清理前」的原文判斷 CC 有沒有打標記
     raw_for_flags = content or live_text or ""
     reply = clean_reply(content)
@@ -348,6 +386,23 @@ async def run_turn(
         ctx_tokens=ctx,
         stop_reason=stop_reason,
         compacted=compacted[0],
+    )
+    # 這一行是「訊息被吃掉」唯一查得動的證據。三個長度擺在一起才有意義：
+    #   texts   → 模型真的講了幾則、各多長（對得上 CC 逐字稿就代表 runner 讀到了）
+    #   live    → 串流累積到多少（有值而 fold 為空＝訊息物件掉字，#50597）
+    #   reply   → 最後折出來要送的長度（0 就是這裡斷的，不必再往下查）
+    # 沒有它的時候，同一個症狀有三種可能的斷點而事後完全分不出來（見 diag.py）。
+    diag.record(
+        "turn",
+        conv=conv, turn=turn_id, prompt=diag.head(prompt, 40),
+        msgs=[type(m).__name__ for m in messages],
+        texts=[
+            len("".join(b.text for b in m.content if hasattr(b, "text")))
+            for m in messages if isinstance(m, AssistantMessage)
+        ],
+        live=len(live_text), fold=len(content), reply=len(reply or ""),
+        tools=tool_count, alien=alien_turns[0], compacted=compacted[0],
+        stop=stop_reason, ok=ok, bg_left=bg_left[0],
     )
     await frontend.emit(make_event(
         conv, turn_id, "turn.end", ok=ok, elapsed=round(time.time() - start, 1),

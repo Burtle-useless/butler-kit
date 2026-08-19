@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  三格高：額度條之外還要放逐日長條圖，兩格塞不下（2026-08-14 由二改三）。
+  只影響之後新加的，桌面上已經存在的那張要自己拉高。
+  updatePeriodMillis 不設（預設 0＝不自動更新）——資料是 UsageWorker 拉的，
+  系統再排一次自己的更新只會多畫一次同樣的東西。
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="80dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="3"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:initialLayout="@layout/widget_loading"
+    android:description="@string/widget_usage_desc" />

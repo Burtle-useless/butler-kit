@@ -105,3 +105,25 @@ def parse_ask_marker(text: str) -> dict | None:
         "question": parts[0],
         "options": [{"label": p, "description": ""} for p in parts[1:]],
     }]}
+
+
+def ask_payload(text: str) -> dict | None:
+    """從回覆原文抽出 [[ASK:]]，轉成 `reply.final` 的 `ask` 欄位格式。
+
+    重建歷史時走這條——選項不是 CC 逐字稿裡的東西，是我們從原文的標記重新抽的，
+    所以重開 App、被系統回收、換手機，同一則訊息底下的按鈕都還在。
+
+    刻意疊在 `parse_ask_marker` 上而不是自己再 search 一次正則：兩份解析遲早
+    會在某個邊界（空白、少於兩段）走鐘，而走鐘的症狀是按鈕忽有忽無，很難查。
+    輸出格式與 `turn.ask_dict` 必須一致，tests/test_ask_inline.py 釘住。
+    """
+    parsed = parse_ask_marker(text)
+    if parsed is None:
+        return None
+    q = parsed["questions"][0]
+    return {
+        "title": q["question"],
+        "choices": [{"id": o["label"], "label": o["label"],
+                     "detail": o.get("description", "")}
+                    for o in q["options"]],
+    }

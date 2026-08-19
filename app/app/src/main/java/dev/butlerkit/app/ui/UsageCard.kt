@@ -2,6 +2,8 @@ package dev.butlerkit.app.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +24,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.DayUsage
@@ -29,6 +32,7 @@ import dev.butlerkit.app.net.LocalUsage
 import dev.butlerkit.app.net.PlanLimit
 import dev.butlerkit.app.net.UsageBucket
 import dev.butlerkit.app.net.UsageReport
+import dev.butlerkit.app.net.humanError
 
 /**
  * 用量表。
@@ -46,21 +50,30 @@ import dev.butlerkit.app.net.UsageReport
 fun UsageCard(client: ButlerClient) {
     var report by remember { mutableStateOf<UsageReport?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // 重試用。原本是 LaunchedEffect(Unit)，一輩子只跑一次——開設定頁時電腦剛好
+    // 沒開，之後電腦開了這張卡也永遠停在那行紅字，只能退出設定頁再進來一次。
+    var reload by remember { mutableStateOf(0) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(reload) {
+        error = null
         client.getUsage(14)
             .onSuccess { report = it }
-            .onFailure { error = it.message }
+            // 這裡跟聊天頁、日常頁共用同一套翻譯：三個地方各寫一份的話，
+            // 同一次連不上會在三頁顯示成三種說法
+            .onFailure { error = humanError(it) }
     }
 
     Column(
         Modifier.fillMaxWidth().background(Palette.Surface, Radii.Card)
+            .border(1.dp, Palette.Line, Radii.Card)
             .padding(Space.Inner),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("用量", color = Palette.Text, fontSize = Type.Body,
-                modifier = Modifier.weight(1f))
+            Text(
+                "用量", color = Palette.Text, fontSize = Type.Title,
+                fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f),
+            )
             report?.let {
                 Text(it.monthKey, color = Palette.TextFaint, fontSize = Type.Tiny)
             }
@@ -79,7 +92,11 @@ fun UsageCard(client: ButlerClient) {
         val l = r?.local?.takeIf { it.month.turns > 0 }
         val days = l?.days?.takeIf { it.isNotEmpty() } ?: r?.days.orEmpty()
         when {
-            error != null -> Text(error!!, color = Palette.Danger, fontSize = Type.Meta)
+            // 點下去要真的重拉，照日常頁那行紅字的同一套做法
+            error != null -> Text(
+                "${error}（點一下重試）", color = Palette.Danger, fontSize = Type.Meta,
+                modifier = Modifier.fillMaxWidth().clickable { reload++ },
+            )
             r == null -> Text("讀取中…", color = Palette.TextFaint, fontSize = Type.Meta)
             days.all { it.turns == 0 } && (l?.month ?: r.month).turns == 0 ->
                 Text("這個月還沒用過。", color = Palette.TextFaint, fontSize = Type.Meta)
@@ -101,7 +118,9 @@ fun UsageCard(client: ButlerClient) {
                 Text(
                     if (l != null) {
                         "這台電腦上所有 Claude Code 的總和，含 cc-bot、終端機與子代理。" +
-                            "最後掃描 ${l.scannedAt.substringAfter('T')}。"
+                            // take(5) 只留 HH:mm：伺服器的 scanned_at 現在含秒
+                            // （新鮮度判斷要秒精度才不會亂跳），但畫面上不需要那一位
+                            "最後掃描 ${l.scannedAt.substringAfter('T').take(5)}。"
                     } else {
                         "只含走助理的回合——本機掃描這次沒成功。"
                     },

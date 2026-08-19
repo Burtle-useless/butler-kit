@@ -12,20 +12,25 @@ import dev.butlerkit.app.data.Prefs
 import dev.butlerkit.app.net.AskRequest
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.ConvInfo
+import dev.butlerkit.app.net.Locator
 import dev.butlerkit.app.net.ServerEvent
 import dev.butlerkit.app.net.SettingsInfo
 import dev.butlerkit.app.net.Wire
+import dev.butlerkit.app.notify.AppForeground
 import dev.butlerkit.app.notify.Notifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -37,20 +42,39 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     )
     val state: StateFlow<ChatState> = _state.asStateFlow()
 
-    // 忙碌計時器的兩個記憶點。上次離開時它正在忙的話（Prefs 有起點），
+    // 忙碌計時器的兩個記憶點，**每個對話各一份**（理由見 syncBusyClock）。
+    // 沒有登記過的對話拿 `prefs.busySince != 0L` 當初值：上次離開時它正在忙的話
     // 就當成「一直忙到現在」，否則 ViewModel 一重建就會把讀回來的起點丟掉，
     // 使用者切出去再切回來看到的就是從頭數的秒數。
-    private var wasBusy = prefs.busySince != 0L
-    private var idleSince = 0L
+    private val wasBusyByConv = mutableMapOf<String, Boolean>()
+    private val idleSinceByConv = mutableMapOf<String, Long>()
 
     // 每個對話各自的軌跡。事件流是全裝置一條，靠 conv_id 分流到這裡；
     // 切對話＝換一個 key 顯示，已收過的內容不會消失。
     private val itemsByConv = mutableMapOf<String, List<TraceItem>>()
+
+    // 已經套用過的最大序號。伺服器保證序號嚴格遞增，所以「不大於它」的一律是重複。
+    // 沒有這道關卡時，任何一次重播都會被當成新事件重畫一遍——兩條 SSE 並存、
+    // 伺服器重啟、續傳邊界都會踩到，症狀是對話自己倒帶。
+    private var appliedSeq = -1L
     private var moodDecay: Job? = null
 
-    // 回合進行中收到的檔案卡片先擱在這（記下當初掛在哪個對話），等回合結束才落地。
-    // send_file 是回合中間的工具呼叫，卡片當場插進去會被後面的回覆文字往上推，
-    // 使用者得往回滑才看得到——這是他明說的「預覽要在我講完話之後」。
+    // 狀態列（模型、秒數、「整理記憶中」）也是每個對話一份。
+    // 先前只有全域一份，同時跑兩個對話時就會互搶：背景那個的心跳蓋掉眼前這個，
+    // 切回去又看到別人的殘影。ChatState 裡的那三個欄位是「當前對話的投影」。
+    private val statusByConv = mutableMapOf<String, TurnStatus>()
+    private val busyByConv = mutableMapOf<String, Boolean>()
+    private val busySinceByConv = mutableMapOf<String, Long>()
+
+    // 回合進行中收到的檔案卡片先擱在這（記下當初掛在哪個對話），等**整則訊息**
+    // 收工（turn.done）才落地。send_file 是回合中間的工具呼叫，卡片當場插進去會被
+    // 後面的回覆文字往上推，使用者得往回滑才看得到——這是他明說的
+    // 「預覽要在我講完話之後」。
+    //
+    // 「整則訊息」不是「一輪」：自動續跑與壓縮核對各會多跑一輪，每輪都有自己的
+    // turn.end 與 reply.final。先前擱置條件看的是 busyByConv，而它被 turn.end 清，
+    // 於是第一輪一結束就變閒置，之後那些輪傳來的卡片全部當場落地插在中間——
+    // 使用者 2026-08-19 回報「這個下載怎麼不是在最下面」。
     private val pendingOffers = mutableListOf<Pair<String, TraceItem.FileOffer>>()
 
     init {
@@ -64,7 +88,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { InboxRepo.refresh(client) }
     }
 
+    /**
+     * 前景時由這裡連 SSE；進背景就把連線交還給 [ButlerService]。
+     *
+     * 用 `collectLatest` 而不是在迴圈裡判斷旗標：它會在 visible 變成 false 的當下
+     * **取消**底下整個 block（包含正在進行的 `stream(...).collect`），這正是
+     * 「同時只有一條連線」需要的動作。原本這個約定只寫在 ButlerService 的註解裡，
+     * 實際上進背景時前景這條照跑，兩條一起改 `prefs.lastSeq`——畫面重複或推播漏掉，
+     * 兩種症狀都出現過而且看不出關聯。
+     */
     private fun connectLoop() = viewModelScope.launch {
+        AppForeground.flow.collectLatest { visible ->
+            if (!visible) {
+                Log.i(ButlerClient.TAG, "App 進背景，前景連線讓給 ButlerService")
+                return@collectLatest
+            }
+            streamForever()
+        }
+    }
+
+    private suspend fun streamForever() = coroutineScope {
         var backoffMs = 1_000L
         Log.i(ButlerClient.TAG, "connectLoop 啟動 host=${prefs.host} lastSeq=${prefs.lastSeq}")
         while (isActive) {
@@ -100,8 +143,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun onEvent(ev: ServerEvent) {
-        prefs.lastSeq = ev.seq
         val conv = ev.convId.ifBlank { _state.value.currentConv }
+
+        // 伺服器重啟了：本地游標屬於上一個世代，畫面上的軌跡也不保證跟電腦上一致。
+        // 丟掉這個對話的本地軌跡改用 snapshot 重建——snapshot 直接讀 CC 的逐字稿，
+        // 是唯一的權威來源。清掉才進得去，loadSnapshot 只在本地為空時才填。
+        if (ev.type == "stream.reset") {
+            appliedSeq = -1L
+            prefs.lastSeq = -1L
+            itemsByConv.remove(conv)
+            loadSnapshot(conv)
+            return
+        }
+
+        // 重複事件擋在這裡。序號嚴格遞增，所以「不大於已套用過的」就是重播。
+        if (ev.seq <= appliedSeq) return
+        appliedSeq = ev.seq
+        prefs.lastSeq = ev.seq
         val isCurrent = conv == _state.value.currentConv
 
         fun append(item: TraceItem) {
@@ -145,9 +203,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 AgendaRepo.refresh(getApplication(), client)
             }
 
-            // 助理傳檔案來了。事件的 conv_id 是 "-"（工具是無狀態呼叫，不知道自己
-            // 屬於哪個對話），所以這一列直接掛到「使用者正在看的那個對話」上，
-            // 不能走上面的 append——那會把它丟進一個永遠不會被顯示的假對話桶裡。
+            // 助理傳檔案來了。事件帶著發起它的 conv_id（伺服器端的傳檔工具改成
+            // 一個對話一份之後才有這個值），所以卡片會落回發起的那段對話——
+            // 工作對話做出來的報告不會再掉進使用者當下正在看的助理對話裡。
             "file.offer" -> {
                 val offer = TraceItem.FileOffer(
                     turnId = ev.turnId,
@@ -158,11 +216,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     note = ev.str("note"),
                     mime = ev.str("mime"),
                 )
-                // 回合還在跑就先擱著，等 turn.end 才排到那段話後面；
-                // 沒在跑代表是回合外送來的（背景任務收工），當場落地就是最下面
-                pendingOffers += _state.value.currentConv to offer
-                if (!_state.value.busy) flushOffers()
+                // 舊版伺服器不知道自己是誰叫的，conv_id 送 "-"。那不是空字串，
+                // 上面的 ifBlank 接不住，卡片會掉進一個永遠不會被顯示的假對話桶。
+                // 這種情況退回當前對話，維持舊行為
+                val from = if (conv == NO_CONV) _state.value.currentConv else conv
+                // 還在跑就先擱著，等 turn.done 才排到最後一段話後面；
+                // 沒在跑代表是回合外送來的（背景任務收工），當場落地就是最下面。
+                // busy 看的是**發起那個對話**在不在跑，不是眼前這個
+                pendingOffers += from to offer
+                if (busyByConv[from] != true) flushOffers()
                 viewModelScope.launch { InboxRepo.refresh(client) }
+            }
+
+            // 助理要知道他人在哪。**完全靜默**：不進軌跡、不提示，抓完就回報——
+            // 助理判斷需要位置才會問，每次都彈個東西只會讓「附近有什麼吃的」
+            // 變成兩次互動。前景時是這裡在收，背景時是 ButlerService（同時只有
+            // 一條連線），兩邊共用 Locator 那一份實作。
+            // launch 出去的理由同 ButlerService：抓位置最多等 15 秒。
+            "device.request" -> viewModelScope.launch {
+                Locator.onDeviceRequest(getApplication(), client, ev)
             }
 
             // 提問進軌跡而不是彈視窗：助理問問題時人多半不在 App 裡，
@@ -197,10 +269,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 setMood(PetMood.Thinking)
             }
 
-            // turn.end 不再 flush——reply.final 比 turn.end 晚到，
-            // 在這裡 flush 會讓卡片插在文字前面。
-            // 改由 reply.final 在 Reply 定稿之後 flush，純工具回合由 turn.start 兜底。
+            // turn.end 與 reply.final 都不 flush：它們是「這一輪」的收尾，續跑與
+            // 壓縮核對還會再來好幾輪，在那裡落地就是插在對話中間。
+            // 改由 turn.done（整則訊息真的收工）flush，純工具回合由 turn.start 兜底。
             "turn.end" -> Unit
+
+            // 整則訊息收工。最後一則 reply.final 一定比它早到（伺服器端 _turn_done
+            // 排在 _run_with_recovery 之後），所以卡片穩定落在最後一段文字下面。
+            "turn.done" -> flushOffers()
 
             "thinking.delta" -> setMood(PetMood.Thinking)
 
@@ -244,8 +320,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             "reply.final" -> {
                 replyOrNull(ev.turnId, ev.str("markdown"))?.let(::append)
-                // Reply 定稿後才 flush，卡片就自然排在文字下面
-                flushOffers()
+                // 選項跟著這則訊息一起來。它不會逾時、不會被收回——伺服器已經
+                // 收工了，按下去等於送一則新訊息（見 answerAsk 的 inline 分支）。
+                AskRequest.inline(ev.data["ask"] as? JsonObject, ev.seq.toString())
+                    ?.let { append(TraceItem.AskItem(ev.turnId, it)) }
                 setMood(PetMood.Happy, decayMs = 3000)
             }
 
@@ -256,21 +334,65 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 setMood(PetMood.Error, decayMs = 4000)
             }
 
-            "seq.gap" -> append(TraceItem.ErrorItem(ev.turnId, "SEQ_GAP",
-                "離線太久，中間有些內容補不回來了"))
+            // 離線太久，要補的起點已經被伺服器的 ring buffer 擠掉了。
+            //
+            // 原本只 append 一則「補不回來了」就算數，但那等於請使用者自己盯著
+            // 一段缺口——而歷史其實補得回來：snapshot 直接讀 CC 的逐字稿，
+            // 是比 ring buffer 更權威的來源。所以這裡走跟 stream.reset 同一套
+            // 復原動作（清本地軌跡 → 用 snapshot 重建），兩條失效路徑共用一套
+            // 邏輯才不會日後長歪。
+            //
+            // 不 append 提示是刻意的：那則錯誤會讓 itemsByConv 變成非空，
+            // 而 loadSnapshot 的填充條件正是「送出請求時本地為空」——留著提示
+            // 就等於親手擋掉自己的復原。缺的工具軌跡補不回來（逐字稿沒存），
+            // 但話回得來，這個取捨遠好過一片空白。
+            //
+            // appliedSeq 不重設：斷層之後的事件仍是新的，照常往前走。
+            "seq.gap" -> {
+                itemsByConv.remove(conv)
+                loadSnapshot(conv)
+            }
+        }
+
+        // 狀態列的歸屬。這一段對每個對話都要記，不能只記眼前這個：
+        // 背景對話跑完了要能反映在它自己的狀態上，切回去才不是一片空白，
+        // 而它跑到一半的「整理記憶中」也不該出現在使用者正在看的那一頁。
+        when (ev.type) {
+            "turn.start" -> {
+                busyByConv[conv] = true
+                // 壓縮完到下一則心跳之間有兩秒空窗，階段旗標不抹會賴在正事上
+                statusByConv[conv]?.let { statusByConv[conv] = it.copy(phase = "", note = "") }
+            }
+            // 只有整則訊息收工（或出錯）才算閒下來。**不要**把 turn.end／reply.final
+            // 加回來：那兩個每一輪都會發，續跑期間旗標會被清成閒置，於是送出鍵提早
+            // 從停止變回箭頭，回合中傳來的檔案卡片也會誤判成「回合外送來的」而當場落地。
+            // 伺服器沒發 turn.done 的情況（舊版、行程被砍）由重連時的 snapshot 校正，
+            // 那份 busy 讀的是伺服器真實的 task 狀態。
+            "turn.done", "error" -> busyByConv[conv] = false
+            "status" -> statusByConv[conv] = TurnStatus(
+                elapsed = ev.dbl("elapsed"), model = ev.str("model"),
+                effort = ev.str("effort"), tools = ev.int("tools"),
+                ctxTokens = ev.int("ctx_tokens"), bg = ev.strList("bg"),
+                phase = ev.str("phase"),
+                // note 只在事情發生的那一刻送一次，後續 status 不帶；
+                // 直接覆蓋會讓提示閃一下就消失，所以沿用到這輪結束
+                note = ev.str("note").ifBlank { statusByConv[conv]?.note.orEmpty() },
+            )
         }
 
         _state.update { s ->
             var next = s.copy(lastSeq = ev.seq)
             if (isCurrent) {
+                // 狀態一律從上面那份 per-conv 紀錄投影過來，不在這裡另算一次，
+                // 免得兩邊邏輯慢慢長歪
                 next = when (ev.type) {
-                    // 新回合開始就把階段旗標抹掉：壓縮完到下一則心跳之間有兩秒空窗，
-                    // 不抹的話「整理記憶中」會賴在正事開跑後的畫面上。
                     "turn.start" -> next.copy(
                         busy = true, streaming = "", thinkingTail = "",
-                        status = s.status?.copy(phase = "", note = ""),
+                        status = statusByConv[conv],
                     )
-                    "turn.end" -> next.copy(busy = false, thinkingTail = "")
+                    // busy 交給 turn.done，理由同上面那份 per-conv 紀錄：
+                    // 這裡清掉的話，續跑期間送出鍵會提早從停止變回箭頭
+                    "turn.end" -> next.copy(thinkingTail = "")
                     // 思考預覽定稿後就清掉，不然會跟剛釘上去的 Thinking 那行重複。
                     //
                     // streaming 只在「這則帶了 text」時清——那代表上面剛把同一段話
@@ -285,17 +407,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     "thinking.delta" ->
                         next.copy(thinkingTail = (s.thinkingTail + ev.str("d")).takeLast(400))
                     "text.delta" -> next.copy(streaming = s.streaming + ev.str("d"))
-                    "reply.final" -> next.copy(streaming = "", busy = false)
+                    "reply.final" -> next.copy(streaming = "")
+                    "turn.done" -> next.copy(busy = false, streaming = "", thinkingTail = "")
                     "error" -> next.copy(busy = false, streaming = "")
-                    "status" -> next.copy(status = TurnStatus(
-                        elapsed = ev.dbl("elapsed"), model = ev.str("model"),
-                        effort = ev.str("effort"), tools = ev.int("tools"),
-                        ctxTokens = ev.int("ctx_tokens"), bg = ev.strList("bg"),
-                        phase = ev.str("phase"),
-                        // note 只在事情發生的那一刻送一次，後續 status 不帶；
-                        // 直接覆蓋會讓提示閃一下就消失，所以沿用到這輪結束
-                        note = ev.str("note").ifBlank { s.status?.note.orEmpty() },
-                    ))
+                    "status" -> next.copy(status = statusByConv[conv])
                     else -> next
                 }
                 // 待建立的新對話畫面必須保持空白：這時 currentConv 還指著舊對話，
@@ -309,6 +424,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         syncBusyClock(
             if (ev.type == "status") (ev.dbl("elapsed") * 1000).toLong() else null,
         )
+        // 計時器只算得出「眼前這個對話」的起點，算完存回去，切走再切回來才不會歸零
+        busySinceByConv[_state.value.currentConv] = _state.value.busySince
     }
 
     /**
@@ -324,11 +441,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun syncBusyClock(serverElapsedMs: Long?) {
         val s = _state.value
+        val conv = s.currentConv
         val now = System.currentTimeMillis()
+        // 這兩個記憶點必須跟著對話走。原本全域各一份，於是：對話 A 正在跑，切去
+        // B 待超過 BUSY_GAP_MS，B 的閒置把 wasBusy 清掉、idleSince 也推過門檻，
+        // 切回 A 時下面的 keep 判成 false，計時器從 0 重數——而 A 那件工作
+        // 從頭到尾根本沒停過。起點（busySinceByConv）早就分對話存了，
+        // 判斷用的依據卻沒有，兩者對不起來。
+        val wasBusy = wasBusyByConv[conv] ?: (prefs.busySince != 0L)
+        val idleSince = idleSinceByConv[conv] ?: 0L
         if (!s.busy) {
             if (wasBusy) {
-                wasBusy = false
-                idleSince = now
+                wasBusyByConv[conv] = false
+                idleSinceByConv[conv] = now
             }
             // 起點留在記憶體裡供續跑沿用，但不留給下次冷啟動——那時它已經過期了
             if (prefs.busySince != 0L) prefs.busySince = 0L
@@ -338,7 +463,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 每次都重設起點的話，長任務的計時器會每續跑一輪就歸零一次。
         val keep = s.busySince != 0L &&
             (wasBusy || (idleSince != 0L && now - idleSince <= BUSY_GAP_MS))
-        wasBusy = true
+        wasBusyByConv[conv] = true
         if (keep) return
         val start = now - (serverElapsedMs ?: 0L)
         prefs.busySince = start
@@ -416,12 +541,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun switchConversation(convId: String) {
         markRead(convId)
+        // 走之前先把這個對話的計時起點收好，切回來才接得上原本的秒數
+        val from = _state.value.currentConv
+        if (from != convId) busySinceByConv[from] = _state.value.busySince
         _state.update {
             it.copy(
                 currentConv = convId,
                 pendingNew = false,
                 items = itemsByConv[convId] ?: emptyList(),
                 streaming = "", thinkingTail = "",
+                // 狀態列換成新對話自己的那份。少了這三行，切過去看到的是
+                // 上一個對話的「整理記憶中」跟它的秒數
+                status = statusByConv[convId],
+                busy = busyByConv[convId] ?: false,
+                busySince = busySinceByConv[convId] ?: 0L,
             )
         }
         loadSnapshot(convId)
@@ -434,17 +567,101 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 重連時那個事件早就過去了，UI 會顯示空閒但其實還在跑。
      */
     private fun loadSnapshot(convId: String) = viewModelScope.launch {
+        // 送出請求「之前」本地有幾則。這個數字是下面判斷的依據，不能等回應到了再問——
+        // 一次 HTTP 來回夠事件流塞進好幾則即時訊息，那時再看就已經不是空的了。
+        val before = itemsByConv[convId]?.size ?: 0
         client.snapshot(convId).onSuccess { snap ->
-            // 只有「本地還沒有任何內容」時才用歷史填充：
-            // 已經有事件流內容時覆蓋回去會把剛收到的即時訊息蓋掉
-            if (itemsByConv[convId].isNullOrEmpty() && snap.messages.isNotEmpty()) {
+            // 只有「送出請求時本地還沒有任何內容」才用歷史填充：
+            // 本來就有內容代表歷史早就在了，覆蓋回去會把即時訊息蓋掉。
+            //
+            // 原本這裡問的是回應到達當下的 `isNullOrEmpty()`，那是個競態：
+            // 冷啟動或重連時 snapshot 還在路上，事件流先送到一則即時訊息，
+            // 條件就變成 false，**整段歷史於是永遠不載入**——使用者看到的是
+            // 一個只有最新一句話的對話，往上滑什麼都沒有。
+            if (before == 0 && snap.messages.isNotEmpty()) {
                 // 助理那側走 replyOrNull：歷史裡那些只有 [[DONE]] 的空回覆
                 // 不還原，否則重開 App 那顆孤兒頭像又會回到畫面上
-                itemsByConv[convId] = snap.messages.mapNotNull { m ->
-                    if (m.role == "user") TraceItem.UserMsg(convId, m.text)
-                    else replyOrNull(convId, m.text)
+                //
+                // 思考要跟著還原，而且要排在該回合的回覆**前面**——串流當下就是
+                // 先看到 💭 再看到話，歷史長得不一樣的話捲回去會覺得是另一段對話。
+                // 歷史沒有 turnId 可用，跟 UserMsg 一樣拿 convId 頂替。
+                // 等待期間事件流塞進來的那些接在歷史後面，不是丟掉。
+                // 它們是「比歷史更新」的訊息，順序上本來就該在最後。
+                val live = itemsByConv[convId].orEmpty()
+                // 檔案卡片要跟訊息交錯排回去。卡片不在 CC 的逐字稿裡（那是 butler
+                // 自己造的東西），所以伺服器另外給一份，兩邊都帶 epoch 毫秒。
+                // 不補的話 App 一重啟、或伺服器一重啟，對話裡的下載框就整排消失——
+                // 使用者 2026-08-18 回報「更新之後下載框會不見」。
+                //
+                // messages 與 files 都是舊到新，走一次歸併就夠。時間相同時卡片排後面
+                // （伺服器把登記時間的秒數補到 59.999 就是為了這個）：卡片的語意本來
+                // 就是「這一輪講完之後才落地」。
+                val cards = snap.files
+                // 已經由事件流放進來的那些不能再放一次。冷啟動時 snapshot 還在路上，
+                // 助理剛好傳了檔案的話那張卡片會同時走即時與歷史兩條路——登記早就存在
+                // 伺服器上了，snapshot 當然也會帶回來。pendingOffers 裡的還沒落地，
+                // 但等回合結束就會，一樣要算進去。
+                val known = (
+                    live.filterIsInstance<TraceItem.FileOffer>().map { it.fileId } +
+                        pendingOffers.filter { it.first == convId }.map { it.second.fileId }
+                    ).toSet()
+                var ci = 0
+                val history = mutableListOf<TraceItem>()
+                fun drainCardsBefore(ms: Long) {
+                    while (ci < cards.size && cards[ci].atMs < ms) {
+                        val c = cards[ci]
+                        ci++
+                        if (c.fileId in known) continue
+                        // 歷史沒有 turnId 可用，跟 UserMsg 一樣拿 convId 頂替
+                        history += TraceItem.FileOffer(
+                            turnId = convId, fileId = c.fileId, name = c.name,
+                            bytes = c.bytes, note = c.note, mime = c.mime,
+                        )
+                    }
                 }
+                snap.messages.forEach { m ->
+                    drainCardsBefore(m.atMs)
+                    if (m.role == "user") {
+                        history += TraceItem.UserMsg(convId, m.text)
+                    } else {
+                        m.think.takeIf { it.isNotBlank() }
+                            ?.let { history += TraceItem.Thinking(convId, it) }
+                        replyOrNull(convId, m.text)?.let { history += it }
+                        // 還沒回答的那組選項要跟著還原，不然重開 App 就看不到
+                        // 助理剛才問了什麼（伺服器只在未回答的那則帶 ask）
+                        m.ask?.let { history += TraceItem.AskItem(convId, it) }
+                    }
+                }
+                // 最後一則訊息之後才傳的檔案
+                drainCardsBefore(Long.MAX_VALUE)
+                // 還在等你回答的提問。排在排隊訊息之前：提問屬於「還沒結束的那一輪」，
+                // 排隊訊息則是等這一輪做完才會被讀走的，時序上在後面。
+                // 沒補回來的話伺服器會一路等到逾時、當成使用者拒絕，那件事就被擋掉了。
+                val liveAskIds = live.filterIsInstance<TraceItem.AskItem>()
+                    .map { it.req.askId }.toSet()
+                snap.asks.forEach { a ->
+                    if (a.askId !in liveAskIds) {
+                        history += TraceItem.AskItem(turnId = convId, req = a)
+                    }
+                }
+                // 排著還沒輪到的訊息，接在最後面——它們是最新的，而且同樣不在
+                // 逐字稿裡（還沒送進 CC）。不補的話使用者會看不到自己剛剛送出了
+                // 什麼，事情卻照跑，最後助理回覆一則他不知道自己問過的問題。
+                // 已經由事件流放進來的不重複放，理由同上面的檔案卡片。
+                val liveMsgIds = live.filterIsInstance<TraceItem.UserMsg>()
+                    .map { it.msgId }.toSet()
+                snap.pending.forEach { p ->
+                    if (p.msgId !in liveMsgIds) {
+                        history += TraceItem.UserMsg(
+                            turnId = convId, text = p.text,
+                            msgId = p.msgId, queued = true,
+                        )
+                    }
+                }
+                itemsByConv[convId] = history + live
             }
+            // 伺服器才知道背景那個對話到底還在不在跑，這是唯一的真值來源
+            busyByConv[convId] = snap.busy
             _state.update { s ->
                 if (s.currentConv != convId) s      // 使用者已經切走了，別亂改畫面
                 else s.copy(
@@ -475,6 +692,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 pendingNew = true, items = emptyList(),
                 streaming = "", thinkingTail = "",
+                // 空白畫面上不該掛著舊對話的秒數與階段
+                status = null, busy = false, busySince = 0L,
             )
         }
     }
@@ -482,6 +701,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteConversation(convId: String) = viewModelScope.launch {
         client.deleteConversation(convId).onSuccess {
             itemsByConv.remove(convId)
+            statusByConv.remove(convId)
+            busyByConv.remove(convId)
+            busySinceByConv.remove(convId)
+            wasBusyByConv.remove(convId)
+            idleSinceByConv.remove(convId)
             if (ccConv == convId) ccConv = null
             refreshConversations()
             if (_state.value.currentConv == convId) switchConversation(DEFAULT_CONV)
@@ -622,16 +846,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun deliver(conv: String, text: String) {
         // 計時器從按下送出就開始跑，不等伺服器的第一則 status——那要兩秒後才到，
         // 而使用者的等待從按下去那一刻就開始了
+        busyByConv[conv] = true
         _state.update { it.copy(busy = true) }
         syncBusyClock(null)
+        busySinceByConv[conv] = _state.value.busySince
         viewModelScope.launch {
             client.sendMessage(conv, text).onFailure { e -> reportSendFailure(conv, e) }
         }
     }
 
     private fun reportSendFailure(conv: String, e: Throwable) {
-        itemsByConv[conv] = (itemsByConv[conv] ?: emptyList()) +
-            TraceItem.ErrorItem(conv, "SEND_FAILED", e.message ?: "送出失敗")
+        val err = TraceItem.ErrorItem(conv, "SEND_FAILED", e.message ?: "送出失敗")
+        // 新對話還沒建起來就失敗了。這時 [conv] 是**上一個**對話的 id
+        // （newConversation 只清畫面，currentConv 沒動），照原路把
+        // `itemsByConv[conv]` 寫回 state.items 等於把舊對話整段歷史
+        // 倒進這個應該空白的新對話裡——使用者按了「新對話」卻看到上一段對話重現。
+        // 只顯示錯誤本身，itemsByConv 一個字都不要碰。
+        if (_state.value.pendingNew) {
+            _state.update { it.copy(items = listOf(err), busy = false) }
+            syncBusyClock(null)
+            return
+        }
+        itemsByConv[conv] = (itemsByConv[conv] ?: emptyList()) + err
         _state.update { s ->
             s.copy(items = itemsByConv[conv] ?: emptyList(), busy = false)
         }
@@ -644,6 +880,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 先樂觀把卡片標成已答再送出——按下去要立刻有反應，等網路來回才變樣子
      * 會讓人以為沒按到而重按。伺服器的 `ask.resolved` 隨後會再蓋一次同樣的值；
      * 真的送失敗時那則不會來，卡片停在「已送出」也比按鈕當掉好處理。
+     *
+     * 兩種提問走不同的路（見 [AskRequest.isInline]）：
+     *   - 附在訊息上的選項：伺服器早就收工了，按下去就是**送一則新訊息**，
+     *     內容是選項本身。所以它不會逾時、放多久都還按得到。
+     *   - 伺服器停著在等的（破壞性指令確認）：要回到原本那一輪去，走 HTTP
+     *     回填答案。這種**不能**改成非阻塞——逾時當成拒絕是安全底線。
      *
      * [text] 是自己打的回答，用來取代選項；照選項回答時傳 null。
      */
@@ -659,7 +901,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         _state.update { it.copy(items = itemsByConv[conv] ?: emptyList()) }
-        viewModelScope.launch { client.answerAsk(askId, choiceId, own) }
+        if (askId.startsWith(AskRequest.INLINE_PREFIX)) {
+            send(own ?: choiceId)
+        } else {
+            viewModelScope.launch { client.answerAsk(askId, choiceId, own) }
+        }
     }
 
     fun stop() {
@@ -691,6 +937,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         const val DEFAULT_CONV = "main"
+        /** 伺服器用來表示「不屬於任何對話」的佔位值（事件的 conv_id／turn_id）。 */
+        private const val NO_CONV = "-"
         /** 忙碌中斷多久以內算同一段工作（續跑與重試之間的空檔是毫秒級的）。 */
         private const val BUSY_GAP_MS = 5_000L
         /** 與伺服器 files.MAX_UPLOAD_BYTES 同值：本地先擋，省掉白傳一趟才收到 413。 */

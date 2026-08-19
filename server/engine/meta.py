@@ -26,7 +26,9 @@ _ERRORISH = re.compile(r"(?i)failed to authenticate|api error|oauth|\b401\b|\b42
 def _session_has_body(jf: Path) -> bool:
     """session 檔是否含對話本體（而不是只有 auto-title 的空殼）。"""
     try:
-        with jf.open(encoding="utf-8") as f:
+        # 同 search.py：沒有 errors="replace" 的話，壞掉的逐字稿會讓解碼拋
+        # UnicodeDecodeError 穿過只接 OSError 的 except，空殼判斷連帶失效。
+        with jf.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 if '"type":"user"' in line or '"type":"assistant"' in line:
                     return True
@@ -74,13 +76,23 @@ async def ask_haiku(prompt: str) -> str:
     return out.strip()
 
 
-async def generate_title(first_message: str) -> str | None:
-    """由第一則訊息生成短標題。失敗或長得像錯誤訊息就回 None。"""
+async def generate_title(convo_text: str) -> str | None:
+    """由對話開頭內容生成短標題。失敗或長得像錯誤訊息就回 None。
+
+    吃的是「一段對話文字」不是「第一則訊息」：使用者的開場常常是「幫我看一下」
+    這種沒有資訊量的話，只讀它就只能生出同等級的標題。3000 字對齊 cc-bot 的
+    _read_session_text 預設值——夠涵蓋前幾輪往返，又不會讓 Haiku 讀太久。
+    """
     try:
-        raw = await ask_haiku(TITLE_PROMPT + first_message[:500])
+        raw = await ask_haiku(TITLE_PROMPT + convo_text[:3000])
     except Exception:
         return None
-    title = (raw or "").strip().splitlines()[0] if raw else ""
+    # 先 splitlines 再取，不要靠 `if raw` 判斷。raw 是 "   " 時那個條件為真，
+    # 但 `"   ".strip()` 是空字串、`"".splitlines()` 是 `[]`，`[0]` 就 IndexError——
+    # 而這行在上面的 try 外面，例外會一路穿出去讓標題端點 500，
+    # 該對話從此不會再有標題（生成只在第一則訊息後跑一次）。
+    lines = (raw or "").strip().splitlines()
+    title = lines[0] if lines else ""
     title = title.strip("「」\"'*#＊ 　")[:24]
     if not title or _ERRORISH.search(title):
         return None

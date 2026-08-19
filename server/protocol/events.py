@@ -24,8 +24,14 @@ EventType = Literal[
     "tool.call",        # 工具呼叫：{"tool","summary","raw","dangerous","icon"}
     "reply.final",      # 本回合最終回覆：{"markdown": str, "files": list,
                         #   "pending_ask": bool}
-                        #   pending_ask=True 代表後面緊接著 ask.request，
-                        #   這輪還沒結束，手機端不要推「做完了」
+                        #   **每一輪都會發**：自動續跑每續一輪一則、壓縮核對再一則。
+                        #   所以它代表「這一輪定稿了」，不代表整則訊息做完了。
+                        #   要判斷做完沒有，看 turn.done。
+    "turn.done",        # 整則使用者訊息真的收工：{"used_tool","markdown",
+                        #   "pending_ask","elapsed_ms"}
+                        #   **手機端的「做完了」推播只認這一則。**綁在 reply.final
+                        #   上時會在續跑的第一輪就推播，使用者點進來助理還在跑。
+                        #   出錯不發（error 事件自己會推「出狀況了」）。
 
     "ask.request",      # 需要使用者決定：{"ask_id", "kind", "title", "body", "raw", "choices"}
     "ask.resolved",     # 已有答案（供其他裝置同步）：{"ask_id", "choice_id"}
@@ -39,6 +45,10 @@ EventType = Literal[
     "message.dropped",  # 排著的訊息隨停止一起取消：{"msg_ids": list[str]}
     "agenda.changed",   # 行事曆／鬧鐘／記帳／課表有變動，叫 App 重拉並重排鬧鐘：{"what": str}
     "file.offer",       # 助理要傳檔案給手機：{"file_id","name","bytes","note"}
+    "device.request",   # 跟手機要一份即時資料：{"req_id","kind","timeout_sec"}
+                        #   kind="location" 時 App 抓一次位置後 POST 回來。
+                        #   **靜默事件**：App 自己處理完自己回，不畫任何 UI，
+                        #   使用者不會知道發生過（跟 ask.request 的差別就在這）。
 ]
 
 # 這幾類事件量大且可合併，弱網下合併後再送，避免逐字事件把手機淹掉

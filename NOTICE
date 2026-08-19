@@ -27,3 +27,21 @@ Copyright 2010-2020 Carbo Kuo (BYVoid) and OpenCC contributors
 master 逐位元組相同。）
 
 App 端只讀這些字典做簡繁轉換，未連結 OpenCC 的程式碼。
+
+
+-------------------------------------------------------------------------------
+Google Play services Location（play-services-location）
+-------------------------------------------------------------------------------
+
+宣告位置：app/app/build.gradle.kts
+    com.google.android.gms:play-services-location
+
+來源：Google Play services SDK
+      https://developers.google.com/android/guides/setup
+
+Copyright Google LLC
+
+本倉庫**不含**該元件的任何檔案——它由 Gradle 在編譯時自行下載，授權依
+Android Software Development Kit License Agreement
+（https://developer.android.com/studio/terms）。App 端用它做 Fused Location
+（定位回報），只在編譯出的 APK 內連結。

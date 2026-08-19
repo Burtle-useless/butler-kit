@@ -2,4 +2,9 @@
 <resources>
     <!-- 桌面顯示名與通知標題。改成你自己的助理叫什麼。 -->
     <string name="app_name">Butler</string>
+
+    <!-- widget 選擇器裡的說明文字 -->
+    <string name="widget_course_desc">今天的課，標出正在上的那一節</string>
+    <string name="widget_today_desc">今天的行程與下一個鬧鐘</string>
+    <string name="widget_usage_desc">訂閱額度還剩多少、多久重置</string>
 </resources>

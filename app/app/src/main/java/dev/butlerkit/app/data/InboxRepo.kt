@@ -70,15 +70,33 @@ object InboxRepo {
      * 抓著 Activity 不放就是洩漏。
      */
     fun startDownload(ctx: Context, client: ButlerClient, file: OfferedFile) {
-        if (file.id in _downloading.value) return
+        // 檢查與標記必須是同一個原子動作，而且要在**這裡**做完，不能等到
+        // coroutine 跑起來才標記：連點兩下時，第二次的檢查會跑在第一次的
+        // coroutine 排到之前，兩次都看到空集合、兩次都放行，同一個檔案下載兩遍。
+        // compareAndSet 失敗代表中間有人改過，重讀再試一次。
+        while (true) {
+            val cur = _downloading.value
+            if (file.id in cur) return
+            if (_downloading.compareAndSet(cur, cur + file.id)) break
+        }
         val app = ctx.applicationContext
         scope.launch { download(app, client, file) }
     }
 
     suspend fun refresh(client: ButlerClient) = lock.withLock {
         client.listOfferedFiles()
-            .onSuccess { _files.value = it }
-            .onFailure { Log.w(ButlerClient.TAG, "拉檔案清單失敗：${it.message}") }
+            .onSuccess {
+                _files.value = it
+                // 這次成功就把上次的錯誤收掉，否則連線恢復後那行紅字會一直掛著，
+                // 看起來像還壞著。
+                _error.value = null
+            }
+            .onFailure {
+                Log.w(ButlerClient.TAG, "拉檔案清單失敗：${it.message}")
+                // 也要說給使用者聽。只寫 log 的話，助理說「傳給你了」但清單是空的，
+                // 而畫面上沒有任何東西顯示「是拉清單失敗，不是沒有檔案」。
+                _error.value = "拿不到檔案清單：${it.message ?: "連線失敗"}"
+            }
     }
 
     /**
@@ -90,7 +108,8 @@ object InboxRepo {
     private suspend fun download(
         ctx: Context, client: ButlerClient, file: OfferedFile,
     ): Boolean {
-        _downloading.update { it + file.id }
+        // 進來時 file.id 已經在 _downloading 裡了（由 startDownload 原子地放進去），
+        // 這裡只負責收尾把它拿掉。
         val result = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 saveViaMediaStore(ctx, client, file)

@@ -66,7 +66,45 @@ data class AskRequest(
     val choices: List<AskChoice>,
     val requireBiometric: Boolean,
 ) {
+    /**
+     * 這組選項是「附在某則訊息底下的」，不是伺服器停著在等的提問。
+     *
+     * 兩者的差別在按下去之後：附在訊息上的選項等於幫你把那句話打進輸入框送出，
+     * 走的是全新的一輪；伺服器在等的那種則要回到原本那一輪去（破壞性指令確認
+     * 就是這種，逾時一律當成拒絕，所以不能改成非阻塞）。
+     */
+    val isInline: Boolean get() = askId.startsWith(INLINE_PREFIX)
+
     companion object {
+        /** 附在訊息上的選項，其 askId 的前綴。伺服器發的 ask_id 是純 hex，不會撞。 */
+        const val INLINE_PREFIX = "inline-"
+
+        /**
+         * 從 `reply.final` 事件裡的 `ask` 欄位建出來。
+         *
+         * [localId] 由呼叫端給一個對話內唯一的值（事件用 seq、歷史用索引），
+         * 用途只是讓「按下去要標記哪一張卡」有得比對。
+         */
+        fun inline(obj: JsonObject?, localId: String): AskRequest? {
+            val title = obj?.get("title")?.jsonPrimitive?.contentOrNull.orEmpty()
+            val choices = obj?.get("choices")?.jsonArray?.mapNotNull { el ->
+                runCatching {
+                    val o = el.jsonObject
+                    AskChoice(
+                        id = o["id"]?.jsonPrimitive?.content.orEmpty(),
+                        label = o["label"]?.jsonPrimitive?.content.orEmpty(),
+                        detail = o["detail"]?.jsonPrimitive?.content.orEmpty(),
+                    )
+                }.getOrNull()
+            }.orEmpty()
+            if (choices.isEmpty()) return null
+            return AskRequest(
+                askId = INLINE_PREFIX + localId,
+                kind = "choose", title = title, body = "", raw = "",
+                choices = choices, requireBiometric = false,
+            )
+        }
+
         fun from(ev: ServerEvent): AskRequest = AskRequest(
             askId = ev.str("ask_id"),
             kind = ev.str("kind"),

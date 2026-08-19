@@ -18,11 +18,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -30,10 +32,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -42,17 +56,20 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,8 +78,10 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -72,7 +91,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dev.butlerkit.app.data.InboxRepo
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.text.KeyboardActions
@@ -83,9 +101,11 @@ import dev.butlerkit.app.net.LocalSession
 import dev.butlerkit.app.net.OfferedFile
 import dev.butlerkit.app.net.SearchHit
 import dev.butlerkit.app.voice.DictateKey
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 捲到某一項的**尾端**用的偏移量（px）。
@@ -97,6 +117,17 @@ private const val TO_ITEM_END = 100_000
 
 /** 判定「已經在最底下」的容差（px）。差幾像素還算貼底，否則跟隨會莫名斷掉。 */
 private const val BOTTOM_SLACK = 24
+
+/**
+ * 畫面上真正看得到的串流文字。
+ *
+ * **判斷「有沒有串流那一項」一律用這個，不要直接看 `streaming` 是否為空。**
+ * 清掉標記之後可能變成空字串——某一段串流只夾帶 `[[DONE]]` 這類東西時就會發生——
+ * 而這件事決定了 LazyColumn 到底有沒有多出那一項。捲動邏輯若拿 `streaming` 判斷、
+ * 清單那邊拿清乾淨的結果判斷，兩邊就會差一格，捲動目標指向不存在的索引，
+ * 再配上刻意很大的 [TO_ITEM_END]，落點完全不可預期。
+ */
+private val ChatState.previewText: String get() = cleanMarkers(streaming)
 
 /**
  * 聊天畫面。兩個分頁共用同一份實作，差別只在 [multiConv]：
@@ -120,7 +151,11 @@ fun ChatScreen(
     onRemoveAttach: (String) -> Unit,
     onConvSettings: (String?, String?) -> Unit,
 ) {
-    val listState = rememberLazyListState()
+    // 每條對話各自一份捲動狀態。共用一份的話，從一條長對話切到另一條短的，
+    // 新對話會直接停在上一條的捲動位置——短的那條根本沒那麼多內容，看到的是空白。
+    // 下面的 landed 也綁同一個 key，兩個要一起換：位置重置了但 landed 還留著 true，
+    // 就不會走「進畫面瞬移到底」那條路，切過去看到的是最上面的舊訊息。
+    val listState = remember(state.currentConv) { LazyListState() }
     var input by remember { mutableStateOf("") }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -131,7 +166,10 @@ fun ChatScreen(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris -> uris.forEach(onAttach) }
 
-    val lastIndex = state.items.size + (if (state.streaming.isNotEmpty()) 1 else 0) - 1
+    // 用 previewText 而不是 streaming：理由見它的說明，兩邊判斷不一致會讓
+    // 捲動目標指向不存在的索引。
+    val preview = remember(state.streaming) { state.previewText }
+    val lastIndex = state.items.size + (if (preview.isNotEmpty()) 1 else 0) - 1
 
     // 「人是不是正停在最底下」。跟隨與否全看這個，不看有沒有新訊息。
     val atBottom by remember {
@@ -149,7 +187,9 @@ fun ChatScreen(
     // 生成一邊更新時等於完全沒辦法讀舊訊息。跟隨只由**使用者自己動手**決定：
     // 一碰就停下（follow=false），滑回底部放手才恢復。程式自己捲的不算，
     // 否則自動捲到一半內容變長就會把自己關掉。
-    var follow by remember { mutableStateOf(true) }
+    // 一樣綁對話：在舊對話裡往上翻歷史會把 follow 關掉，那個「關掉」不該跟著人
+    // 帶到下一條對話——切過去之後新訊息不會自動跟，看起來像卡住了。
+    var follow by remember(state.currentConv) { mutableStateOf(true) }
     LaunchedEffect(listState) {
         listState.interactionSource.interactions.collect { i ->
             if (i is DragInteraction.Start) follow = false
@@ -168,7 +208,7 @@ fun ChatScreen(
     // 只會把它的第一行對齊畫面頂端，內容全在下面看不到，人得再自己往下滑。
     // 生成中（streaming 每幾個字就更新一次）用瞬移：動畫會被下一次更新打斷，
     // 看起來就是畫面在抖。
-    var landed by remember { mutableStateOf(false) }
+    var landed by remember(state.currentConv) { mutableStateOf(false) }
     LaunchedEffect(state.items.size, state.streaming, state.status) {
         if (lastIndex < 0) return@LaunchedEffect
         when {
@@ -271,10 +311,11 @@ private fun ConvDrawer(
             if (q.isBlank()) hits = emptyList()
         },
         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
-            .background(Palette.SurfaceHi, Radii.Chip)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            // 輸入框一律 Radii.Field，跟 Components.kt 的 Field() 同一個形狀
+            .background(Palette.SurfaceHi, Radii.Field)
+            .padding(horizontal = 14.dp, vertical = 14.dp),
         textStyle = androidx.compose.ui.text.TextStyle(
-            fontSize = Type.Meta, color = Palette.Text,
+            fontSize = Type.Body, color = Palette.Text,
         ),
         singleLine = true,
         cursorBrush = SolidColor(Palette.Accent),
@@ -294,7 +335,7 @@ private fun ConvDrawer(
         decorationBox = { inner ->
             Box {
                 if (query.isEmpty()) {
-                    Text("搜尋訊息", color = Palette.TextFaint, fontSize = Type.Meta)
+                    Text("搜尋訊息", color = Palette.TextFaint, fontSize = Type.Body)
                 }
                 inner()
             }
@@ -305,21 +346,21 @@ private fun ConvDrawer(
         return@Column
     }
     var picking by remember { mutableStateOf(false) }
-    Text(
-        "＋ 新對話",
-        color = Palette.Accent, fontSize = Type.Body, fontWeight = FontWeight.Medium,
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onNew)
-            .padding(horizontal = 18.dp, vertical = 12.dp),
-    )
+    // 這兩列原本是「＋ 新對話」「⇱ 接電腦上的 session」「← 回對話清單」，
+    // 前面掛的都是全形字元充當圖示：粗細與大小跟著系統字型跑，讀螢幕軟體會
+    // 把它們唸成標點。抽屜是第二批清字元圖示時漏掉的一整塊
+    DrawerAction(Icons.Filled.Add, "新對話", Palette.Accent, onNew)
     // 電腦上用 CLI 或官方 App 跑過的 session，助理本來看不到。點進去挑一個接回來，
     // 之後就能在手機上續談那條——不必回電腦前面。
-    Text(
-        if (picking) "← 回對話清單" else "⇱ 接電腦上的 session",
-        color = if (picking) Palette.TextDim else Palette.Accent,
-        fontSize = Type.Meta,
-        modifier = Modifier.fillMaxWidth().clickable { picking = !picking }
-            .padding(horizontal = 18.dp, vertical = 10.dp),
-    )
+    if (picking) {
+        DrawerAction(
+            Icons.AutoMirrored.Filled.ArrowBack, "回對話清單", Palette.TextDim,
+        ) { picking = false }
+    } else {
+        DrawerAction(
+            Icons.Filled.Computer, "接電腦上的 session", Palette.Accent,
+        ) { picking = true }
+    }
     HorizontalDivider(color = Palette.Line, thickness = 0.6.dp)
     if (picking) {
         LocalSessionPicker(client, onPick)
@@ -332,33 +373,59 @@ private fun ConvDrawer(
             // 待建立的新對話還不在清單上，這時任何一條都不該被標成「目前」
             val current = c.id == state.currentConv && !state.pendingNew
             Row(
+                // 刪除鈕是 48dp，列要有 56dp 才容得下它又不會被上下的 padding
+                // 疊成一條胖列。沒有刪除鈕的那列靠 heightIn 維持一樣高
                 Modifier.fillMaxWidth()
+                    .heightIn(min = 56.dp)
                     .background(if (current) Palette.SurfaceHi else Palette.Surface)
                     .clickable { onPick(c.id) }
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                    .padding(start = 18.dp, end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // 這個 # 留著不換成圖示：它是 Discord 頻道的寫法，抽屜整個就是照
+                // cc-bot 在 Discord 的頻道列表做的，換掉會失去那層對應
                 Text(
                     "#", color = if (current) Palette.Accent else Palette.TextFaint,
-                    fontSize = Type.Meta,
+                    fontSize = Type.Body,
                 )
                 Text(
                     c.title,
                     color = if (current) Palette.Text else Palette.TextDim,
-                    fontSize = Type.Meta,
+                    fontSize = Type.Body,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f).padding(start = 10.dp),
                 )
                 if (!current) {
-                    Text(
-                        "×", color = Palette.TextFaint, fontSize = Type.Body,
-                        modifier = Modifier.clickable { onDelete(c.id) }
-                            .padding(start = 10.dp),
-                    )
+                    // 原本是一個「×」字元，可點範圍只有 20dp 高——而且這是刪除，
+                    // 誤觸的代價比別的鈕都大
+                    IconBtn(Icons.Filled.Close, "刪掉這條對話") { onDelete(c.id) }
                 }
             }
         }
     }
+}
+
+/** 抽屜裡的一列操作：圖示＋文字，整列可點，56dp 高（跟下面的對話列對齊）。 */
+@Composable
+private fun DrawerAction(
+    icon: ImageVector,
+    text: String,
+    tint: Color,
+    onClick: () -> Unit,
+) = Row(
+    Modifier.fillMaxWidth()
+        .heightIn(min = 56.dp)
+        .clickable(onClick = onClick)
+        .padding(horizontal = 18.dp),
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    // 文字已經把事情講完了，圖示不重複描述，所以 contentDescription 給 null
+    Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+    Text(
+        text, color = tint, fontSize = Type.Body, fontWeight = FontWeight.Medium,
+        modifier = Modifier.padding(start = 12.dp),
+    )
 }
 
 /**
@@ -403,11 +470,17 @@ private fun ColumnScope.SearchResults(
     }
 }
 
+/** 一頁抓幾筆。伺服器要為每筆開檔讀前幾行，一次抓太多會讓清單開得很慢。 */
+private const val SESSION_PAGE = 40
+
 /**
  * 電腦上既有 session 的挑選清單。
  *
  * 點一則就接成新對話並切過去。接管只是把 session id 記到那條對話上，
  * 真正的 resume 留到下一則訊息送出時才發生——點錯不會白開一個 CC 行程。
+ *
+ * 分頁載入：之前寫死只拿前 60 筆，電腦上現有 130 幾個 session，再舊的根本
+ * 點不到。改成滑到底自動續拉，直到伺服器說沒有了為止。
  */
 @Composable
 private fun ColumnScope.LocalSessionPicker(
@@ -415,22 +488,31 @@ private fun ColumnScope.LocalSessionPicker(
     onPicked: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    var rows by remember { mutableStateOf<List<LocalSession>?>(null) }
+    val rows = remember { mutableStateListOf<LocalSession>() }
+    var loaded by remember { mutableStateOf(false) }
+    var hasMore by remember { mutableStateOf(true) }
+    var page by remember { mutableStateOf(0) }
+    var loading by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
-        client.listLocalSessions()
-            .onSuccess { rows = it }
-            .onFailure { rows = emptyList() }
+
+    // 以 page 當 key：底部的 loader 一進畫面就把 page 加一，這裡跟著抓下一頁
+    LaunchedEffect(page) {
+        loading = true
+        client.listLocalSessions(offset = page * SESSION_PAGE, limit = SESSION_PAGE)
+            .onSuccess { rows.addAll(it.rows); hasMore = it.hasMore }
+            .onFailure { hasMore = false }
+        loading = false
+        loaded = true
     }
-    val list = rows
-    if (list == null) {
+
+    if (!loaded) {
         Text(
             "翻電腦上的紀錄…", color = Palette.TextFaint, fontSize = Type.Meta,
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
         )
         return
     }
-    if (list.isEmpty()) {
+    if (rows.isEmpty()) {
         Text(
             "沒有還沒接管的 session。", color = Palette.TextFaint, fontSize = Type.Tiny,
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
@@ -438,8 +520,8 @@ private fun ColumnScope.LocalSessionPicker(
         return
     }
     LazyColumn(Modifier.weight(1f)) {
-        items(list.size) { i ->
-            val s = list[i]
+        items(rows.size) { i ->
+            val s = rows[i]
             val loading = busy == s.sessionId
             Column(
                 Modifier.fillMaxWidth()
@@ -465,6 +547,26 @@ private fun ColumnScope.LocalSessionPicker(
                         if (s.sidechain) "子代理" else null,
                     ).joinToString(" · "),
                     color = Palette.TextFaint, fontSize = Type.Tiny, maxLines = 1,
+                )
+            }
+        }
+        // 這一列滑進畫面就代表看到底了，順勢抓下一頁。
+        // 沒有另外算捲動位置：loader 被組合出來本身就是「到底了」最準的訊號。
+        if (hasMore) {
+            item {
+                LaunchedEffect(rows.size) { if (!loading) page += 1 }
+                Text(
+                    "翻更舊的…（已 ${rows.size} 筆）",
+                    color = Palette.TextFaint, fontSize = Type.Tiny,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                )
+            }
+        } else {
+            item {
+                Text(
+                    "到底了，共 ${rows.size} 筆",
+                    color = Palette.TextFaint, fontSize = Type.Tiny,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
                 )
             }
         }
@@ -523,13 +625,17 @@ private fun ChatBody(
     // 助理在等你回答的時候，整個回合就停在那一題上——這時候從底下送出的訊息只會
     // 排進佇列乾等到它逾時，人看到的是「我打了字卻什麼都沒發生」。所以有題目
     // 待答時，輸入列直接改成回答那一題，不必先滑上去找那張卡。
+    //
+    // 只有「伺服器真的停著在等」的那種才鎖輸入列（破壞性指令確認）。附在訊息
+    // 上的選項不鎖：那種沒有人在等，直接打字就是正常送出，而且它會一直留在
+    // 軌跡上——鎖了的話輸入列會永遠停在回答模式。
     val waitingAsk = state.items.lastOrNull {
-        it is TraceItem.AskItem && it.pending
+        it is TraceItem.AskItem && it.pending && !it.req.isInline
     } as TraceItem.AskItem?
 
     // 串流預覽一律看「清掉控制標記之後」還剩什麼：助理有時整輪只吐一個 [[DONE]]，
     // 拿原始字串判斷會畫出一顆沒有內容的空氣泡。
-    val preview = cleanMarkers(state.streaming)
+    val preview = remember(state.streaming) { state.previewText }
 
     var showConvSettings by remember { mutableStateOf(false) }
     if (showConvSettings) {
@@ -560,7 +666,7 @@ private fun ChatBody(
                 )
             }
         } else {
-            // 最新一則回覆旁的助理是「活的」（跟著實際狀態變表情），
+            // 最新一則回覆旁的桌寵是「活的」（跟著實際狀態變表情），
             // 歷史訊息旁的是安靜的 Idle——像通訊軟體的頭像，但最新那顆會演戲
             val lastReply = state.items.indexOfLast { it is TraceItem.Reply }
             LazyColumn(
@@ -631,11 +737,14 @@ private fun NoConvPlaceholder(title: String, onNewConv: () -> Unit) = Column(
     Button(
         onClick = onNewConv,
         modifier = Modifier.padding(top = 20.dp),
-        shape = Radii.Bubble,
+        shape = Radii.Field,
         colors = ButtonDefaults.buttonColors(
             containerColor = Palette.Accent, contentColor = Palette.Bg,
         ),
-    ) { Text("＋ 新對話", fontSize = Type.Body) }
+    ) {
+        Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp))
+        Text("新對話", fontSize = Type.Body, modifier = Modifier.padding(start = 6.dp))
+    }
 }
 
 /** 緊湊頂欄：☰ 開抽屜（僅多對話頁）＋標題＋⚙ 對話設定＋連線點。 */
@@ -655,43 +764,62 @@ private fun ChatTopBar(
             .firstOrNull { it.id == state.currentConv }?.title ?: state.currentConv
     }
 
-    Row(
-        Modifier.fillMaxWidth().height(52.dp)
-            .let { if (multiConv) it.clickable(onClick = onOpenDrawer) else it }
-            .padding(horizontal = Space.Screen),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (multiConv) Text("☰", fontSize = Type.Title, color = Palette.TextDim)
-        // 標題要吃掉整段剩餘寬度，連線燈才會貼到最右邊。原本是
-        // weight(1f, fill = false) 再補一個 Spacer(weight(1f))——兩個權重把剩餘空間
-        // 各分一半，短標題（「助理」）下燈就停在畫面中線，看起來像漂在半空。
-        Text(
-            currentTitle, fontSize = Type.Title,
-            fontWeight = FontWeight.Medium, color = Palette.Text,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .padding(start = if (multiConv) 12.dp else 0.dp)
-                .weight(1f),
+    // 報頭：標題行＋日期刊別，底下壓一粗一細的雙規線。
+    // 「晚報／早報」跟著時鐘走——沒有功能，但報頭少了刊別就只是個標題列。
+    val edition = remember {
+        val cal = java.util.Calendar.getInstance()
+        val md = "%02d.%02d".format(
+            cal.get(java.util.Calendar.MONTH) + 1,
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
         )
-        state.connError?.let {
-            Text(it, fontSize = Type.Tiny, color = Palette.Danger,
-                modifier = Modifier.padding(end = 8.dp), maxLines = 1)
+        val part = if (cal.get(java.util.Calendar.HOUR_OF_DAY) < 12) "早報" else "晚報"
+        "$md · $part"
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = Space.Screen)) {
+        Row(
+            // heightIn 不是 height：系統字級調大時標題會需要更高的一列，
+            // 寫死高度的話字會被上下切掉
+            Modifier.fillMaxWidth().heightIn(min = 50.dp)
+                .let { if (multiConv) it.clickable(onClick = onOpenDrawer) else it },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (multiConv) {
+                Icon(
+                    Icons.Filled.Menu, "對話清單",
+                    tint = Palette.TextDim, modifier = Modifier.size(22.dp),
+                )
+            }
+            Text(
+                currentTitle, fontSize = Type.Head,
+                fontWeight = FontWeight.Bold, color = Palette.Text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(start = if (multiConv) 12.dp else 0.dp)
+                    .weight(1f),
+            )
+            state.connError?.let {
+                Text(it, fontSize = Type.Tiny, color = Palette.Danger,
+                    fontFamily = FontFamily.SansSerif,
+                    modifier = Modifier.padding(end = 8.dp), maxLines = 1)
+            }
+            // 刊別代替原本的綠點：連得上是日期，連不上直接印「斷線」。
+            // 文字比一顆 7dp 的點誠實——點只有顏色，色弱看不出差別
+            Text(
+                if (state.connected) edition else "斷線",
+                fontSize = Type.Tiny,
+                fontFamily = FontFamily.SansSerif,
+                color = if (state.connected) Palette.TextFaint else Palette.Danger,
+                modifier = Modifier.padding(end = 6.dp),
+            )
+            // 對話設定（模型／思考強度／context）。整條頂欄本身是開抽屜的觸控區，
+            // 這顆要自己的 clickable 才不會被外層吃掉。
+            IconBtn(Icons.Filled.Settings, "對話設定", onClick = onOpenSettings)
         }
-        // 對話設定（模型／思考強度／context）。整條頂欄本身是開抽屜的觸控區，
-        // 這顆要自己的 clickable 才不會被外層吃掉。
-        Text(
-            "⚙", fontSize = Type.Body, color = Palette.TextDim,
-            modifier = Modifier
-                .clickable(onClick = onOpenSettings)
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-        )
-        Box(
-            Modifier.size(7.dp).background(
-                if (state.connected) Palette.Ok else Palette.TextFaint,
-                Radii.Chip,
-            ),
-        )
+        // 雙規線：粗上細下，報頭的落款
+        Box(Modifier.fillMaxWidth().height(2.dp).background(Palette.Text))
+        Spacer(Modifier.height(2.dp))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Line))
     }
 }
 
@@ -717,7 +845,9 @@ private fun ConvSettingsDialog(
         containerColor = Palette.Surface,
         titleContentColor = Palette.Text,
         textContentColor = Palette.TextDim,
-        title = { Text("這條對話", fontSize = Type.Body) },
+        title = {
+            Text("這條對話", fontSize = Type.Title, fontWeight = FontWeight.Bold)
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 if (cs == null) {
@@ -806,7 +936,9 @@ private fun ChipPicker(
                 fontSize = Type.Tiny,
                 maxLines = 1,
                 modifier = Modifier
-                    .background(if (on) Palette.Accent else Palette.SurfaceHi, Radii.Chip)
+                    // clip 要在 clickable 之前，否則水波紋是方形、蓋過膠囊的圓角
+                    .clip(Radii.Chip)
+                    .background(if (on) Palette.Accent else Palette.SurfaceHi)
                     .clickable { onPick(opt) }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             )
@@ -821,7 +953,7 @@ private fun shortModel(m: String) = m.removePrefix("claude-")
 private val AvatarW = 42.dp
 
 /**
- * 助理的一列：平鋪式（照 cc-bot 在 Discord 的樣子）——
+ * 桌寵的一列：平鋪式（照 cc-bot 在 Discord 的樣子）——
  * 左側頭像、右側內容**用滿寬度**，不裝氣泡。長 Markdown 內容氣泡會浪費寬度。
  */
 @Composable
@@ -956,7 +1088,7 @@ private fun TraceRow(
         )
     }
 
-    // 出錯：助理本人擺出 >< 臉站在訊息旁邊
+    // 出錯：桌寵本人擺出 >< 臉站在訊息旁邊
     is TraceItem.ErrorItem -> BotRow(PetMood.Error) {
         Text(
             item.detail,
@@ -1071,10 +1203,13 @@ private fun StatusLine(state: ChatState) = Column(
     // 背景子代理：伺服器每兩秒把進行中的清單帶在 status.bg 裡。不畫出來的話，
     // 主回合在等子代理時畫面只剩「想一下」，看起來像卡住了。
     state.status?.bg.orEmpty().forEach { desc ->
+        // 原本前面掛一個「⚙」字元。「背景：」三個字已經把話說完了，
+        // 再擺一個可以換成任何符號的圖示只是裝飾
         Text(
-            "⚙ 背景：$desc",
+            "背景：$desc",
             color = Palette.TextFaint,
             fontSize = Type.Tiny,
+            lineHeight = Type.TinyLine,
             maxLines = 2,
             modifier = Modifier.padding(start = 15.dp, top = 2.dp),
         )
@@ -1143,15 +1278,18 @@ private fun InputDock(
         verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // 附加檔案。放輸入框左邊（照通訊軟體的慣例），44dp 觸控目標
+        // 附加檔案。放輸入框左邊（照通訊軟體的慣例），48dp 觸控目標。
+        // 方框墨線——印刷品的按鈕是框，不是浮著的圓
         Box(
-            Modifier.size(44.dp)
-                .background(Palette.Surface, CircleShape)
+            Modifier.size(48.dp)
+                .border(1.dp, Palette.Line)
                 .clickable(onClick = onPickFile),
             contentAlignment = Alignment.Center,
         ) {
-            Text("＋", fontSize = 18.sp, fontWeight = FontWeight.Bold,
-                color = Palette.TextDim)
+            Icon(
+                Icons.Filled.Add, "附加檔案",
+                tint = Palette.TextDim, modifier = Modifier.size(20.dp),
+            )
         }
         // 講話填字。接在現有文字後面，不覆蓋——講一段補打幾個字再講是常見用法
         DictateKey(onText = { onChange(value + it) })
@@ -1184,29 +1322,29 @@ private fun InputDock(
         // 排隊機制的前提就是「忙的時候還能繼續講」，兩顆共用一個位置等於把它關掉了
         if (busy) {
             Box(
-                Modifier.size(44.dp)
-                    .background(Palette.DangerSoft, CircleShape)
+                Modifier.size(48.dp)
+                    .border(1.dp, Palette.Danger)
                     .clickable(onClick = onStop),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("■", fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                    color = Palette.Danger)
+                Icon(
+                    Icons.Filled.Stop, "停下來",
+                    tint = Palette.Danger, modifier = Modifier.size(20.dp),
+                )
             }
         }
+        // 能送＝墨底反白（報紙的實色鈕）；不能送＝虛框。朱紅留給警示不給主動作
         Box(
-            Modifier.size(44.dp)
-                .background(
-                    if (canSend) Palette.Accent else Palette.Surface,
-                    CircleShape,
-                )
+            Modifier.size(48.dp)
+                .background(if (canSend) Palette.Text else Palette.Bg)
+                .border(1.dp, if (canSend) Palette.Text else Palette.Line)
                 .clickable(enabled = canSend, onClick = onSend),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                "↑",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (canSend) Palette.Bg else Palette.TextFaint,
+            Icon(
+                Icons.AutoMirrored.Filled.Send, "送出",
+                tint = if (canSend) Palette.Bg else Palette.TextFaint,
+                modifier = Modifier.size(20.dp),
             )
         }
     }
@@ -1239,7 +1377,8 @@ private fun AttachmentStrip(
         ) {
             uploading.forEach { name ->
                 Row(
-                    Modifier.background(Palette.Surface, Radii.Bubble)
+                    // 固定高度的單行膠囊：Radii.Chip 的適用場景就是這個
+                    Modifier.background(Palette.Surface, Radii.Chip)
                         .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1254,22 +1393,32 @@ private fun AttachmentStrip(
             }
             attachments.forEach { a ->
                 Row(
-                    Modifier.background(Palette.SurfaceHi, Radii.Bubble)
+                    Modifier.background(Palette.SurfaceHi, Radii.Chip)
                         .padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text("📎", fontSize = Type.Meta)
+                    Icon(
+                        Icons.Filled.AttachFile, null,
+                        tint = Palette.TextDim, modifier = Modifier.size(14.dp),
+                    )
                     Text(a.name, color = Palette.Text, fontSize = Type.Meta, maxLines = 1)
                     Text(
                         fmtBytes(a.bytes),
                         color = Palette.TextFaint, fontSize = Type.Meta,
                     )
-                    Text(
-                        "✕", color = Palette.TextDim, fontSize = Type.Meta,
+                    // 膠囊才 30dp 高，這裡不能用 minimumInteractiveComponentSize——
+                    // 它會把整列的版面撐到 48dp，膠囊跟著變成一條粗方塊。
+                    // 改成靠內縮把可點範圍撐大；旁邊沒有別的可點元素，
+                    // Compose 的觸控擴展會補完剩下的差距
+                    Icon(
+                        Icons.Filled.Close, "不要附這個檔",
+                        tint = Palette.TextDim,
                         modifier = Modifier
+                            .clip(CircleShape)
                             .clickable { onRemove(a.path) }
-                            .padding(horizontal = 4.dp),
+                            .padding(6.dp)
+                            .size(14.dp),
                     )
                 }
             }
@@ -1311,10 +1460,18 @@ private fun FileOfferCard(item: TraceItem.FileOffer, client: ButlerClient) {
             client.downloadOfferedFile(item.fileId, buf)
                 .onSuccess {
                     val raw = buf.toByteArray()
-                    preview = BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                    // 解碼一定要離開主執行緒。LaunchedEffect 的 coroutine 跑在
+                    // Compose 的 UI dispatcher 上，decodeByteArray 是純 CPU 工作，
+                    // 一張相機拍的圖就要幾百毫秒——那段時間畫面完全不動，
+                    // 連捲動都停住，圖夠大就直接吃 ANR。
+                    // 用 Default 不是 IO：這裡不等外部裝置，是在燒 CPU。
+                    val bmp = withContext(Dispatchers.Default) {
+                        BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                    }
+                    preview = bmp
                     // 副檔名說是圖、實際解不出來（壞檔或不支援的格式）也算失敗，
                     // 否則轉圈會一直轉下去
-                    if (preview == null) previewFailed = true
+                    if (bmp == null) previewFailed = true
                 }
                 .onFailure { previewFailed = true }
         }
@@ -1322,15 +1479,21 @@ private fun FileOfferCard(item: TraceItem.FileOffer, client: ButlerClient) {
 
     Column(
         Modifier.fillMaxWidth().padding(start = AvatarW)
+            // 提問卡有底色這張沒有，兩張同類的卡並排就差一階。補上才是同一層
+            .background(Palette.Surface, Radii.Card)
             .border(1.dp, Palette.Line, Radii.Card)
             .padding(Space.Inner),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (item.isImage) "▣" else "▤", color = Palette.Accent,
-                fontSize = Type.Meta)
+            Icon(
+                if (item.isImage) Icons.Filled.Image else Icons.Filled.Description,
+                null, tint = Palette.Accent, modifier = Modifier.size(18.dp),
+            )
+            // 檔名是這張卡的主體，不是附註
             Text(
-                item.name, color = Palette.Text, fontSize = Type.Meta,
+                item.name, color = Palette.Text, fontSize = Type.Body,
+                fontWeight = FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
@@ -1346,7 +1509,9 @@ private fun FileOfferCard(item: TraceItem.FileOffer, client: ButlerClient) {
             Image(
                 bitmap = bmp.asImageBitmap(),
                 contentDescription = item.name,
-                modifier = Modifier.fillMaxWidth().clip(Radii.Chip),
+                // Radii.Chip 是 999dp 的膠囊：拿去裁一張整寬的圖，左右兩端會被切成
+                // 半圓，圖的內容跟著缺一角。圖片要的是小圓角
+                modifier = Modifier.fillMaxWidth().clip(Radii.Tiny),
                 contentScale = ContentScale.FillWidth,
             )
         }
@@ -1369,8 +1534,14 @@ private fun FileOfferCard(item: TraceItem.FileOffer, client: ButlerClient) {
         Text(
             if (savedAt != null) "已存到 $savedAt" else if (saving) "存檔中…" else "存到手機",
             color = if (savedAt != null) Palette.Ok else Palette.Accent,
-            fontSize = Type.Meta,
+            fontSize = Type.Body,
+            fontWeight = FontWeight.Medium,
             modifier = Modifier
+                // 一行 13sp 的文字連結高度只有 18dp，遠低於 48dp 的可觸控下限。
+                // 這是卡片上唯一的操作，撐成一顆看得出可以按的方塊；
+                // clip 在 clickable 之前，水波紋才會跟著圓角走
+                .clip(Radii.Field)
+                .background(Palette.SurfaceHi)
                 .clickable(enabled = !saving && savedAt == null) {
                     // gone 這裡填 false：清單端點才算得出這個旗標，而下載
                     // 失敗本來就會走 InboxRepo 的錯誤流程，不必先問一次
@@ -1382,7 +1553,7 @@ private fun FileOfferCard(item: TraceItem.FileOffer, client: ButlerClient) {
                         ),
                     )
                 }
-                .padding(top = 2.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         )
     }
 }
@@ -1427,9 +1598,11 @@ private fun AskCard(
         }
         if (ask.raw.isNotBlank()) {
             Box(
+                // 程式碼區塊用 Radii.Tiny。原本是 Chip（999dp 膠囊），指令一長成
+                // 兩行就會變成一顆兩端渾圓的藥丸，等寬字排在裡面對不上左邊界
                 Modifier.fillMaxWidth()
-                    .background(Palette.Bg, Radii.Chip)
-                    .border(1.dp, Palette.Danger.copy(alpha = 0.4f), Radii.Chip)
+                    .background(Palette.Bg, Radii.Tiny)
+                    .border(1.dp, Palette.Danger.copy(alpha = 0.4f), Radii.Tiny)
                     .padding(12.dp),
             ) {
                 Text(
@@ -1456,7 +1629,8 @@ private fun AskCard(
                     Button(
                         onClick = { onAnswer(ask.askId, c.id, null) },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = Radii.Bubble,
+                        // 全 App 的按鈕都是 Radii.Field，這裡跟著走
+                        shape = Radii.Field,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Palette.Accent, contentColor = Palette.Bg,
                         ),
@@ -1528,14 +1702,20 @@ private fun OwnAnswerField(onSubmit: (String) -> Unit) {
         )
         val can = text.isNotBlank()
         Box(
-            Modifier.size(38.dp)
-                .background(if (can) Palette.Accent else Palette.Surface, CircleShape)
+            // 這顆在提問卡片裡，38dp 的視覺尺寸不能再放大。
+            // minimumInteractiveComponentSize 一定要放在 size 前面（外層），
+            // 擺後面的話它收到的是固定 38dp 的限制，等於沒寫
+            Modifier.minimumInteractiveComponentSize()
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(if (can) Palette.Accent else Palette.Surface)
                 .clickable(enabled = can) { onSubmit(text.trim()); text = "" },
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                "↑", fontSize = 16.sp, fontWeight = FontWeight.Bold,
-                color = if (can) Palette.Bg else Palette.TextFaint,
+            Icon(
+                Icons.AutoMirrored.Filled.Send, "送出回答",
+                tint = if (can) Palette.Bg else Palette.TextFaint,
+                modifier = Modifier.size(16.dp),
             )
         }
     }

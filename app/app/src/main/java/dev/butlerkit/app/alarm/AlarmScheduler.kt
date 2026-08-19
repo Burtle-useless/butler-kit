@@ -49,9 +49,17 @@ object AlarmScheduler {
      */
     fun sync(ctx: Context, data: AgendaData) {
         val prefs = Prefs(ctx)
-        prefs.scheduledIds.forEach { cancel(ctx, it) }
+        // 貪睡是本地補排的一次性觸發，伺服器資料裡沒有它，所以全量重排會把它掃掉。
+        // 但也不能一律留著——來源鬧鐘被關掉或刪掉時，使用者的意思顯然是「別再吵我」，
+        // 那時貪睡也該一起消失。原本 "$id#snooze" 從沒進過 scheduledIds，
+        // 於是**永遠取消不掉**：鬧鐘關了五分鐘後照樣響，畫面上還找不到它是打哪來的。
+        val liveAlarms = data.alarms.filter { it.enabled }.map { it.id }.toSet()
+        val keptSnoozes = prefs.scheduledIds.filter {
+            it.endsWith(SNOOZE_SUFFIX) && it.removeSuffix(SNOOZE_SUFFIX) in liveAlarms
+        }.toSet()
+        (prefs.scheduledIds - keptSnoozes).forEach { cancel(ctx, it) }
 
-        val live = mutableSetOf<String>()
+        val live = keptSnoozes.toMutableSet()
         data.alarms.filter { it.enabled }.forEach { a ->
             nextTrigger(a)?.let { at ->
                 schedule(ctx, TYPE_ALARM, a.id, a.label.ifBlank { "鬧鐘" }, a.time, at)
@@ -68,10 +76,27 @@ object AlarmScheduler {
         Log.i(ButlerClient.TAG, "鬧鐘已重排 ${live.size} 個")
     }
 
-    /** 貪睡：不動伺服器資料，只在本地補排一次性觸發。 */
+    /** 貪睡排程的 id 後綴。[sync] 靠它認出「這個不是伺服器來的」。 */
+    const val SNOOZE_SUFFIX = "#snooze"
+
+    /**
+     * 貪睡：不動伺服器資料，只在本地補排一次性觸發。
+     *
+     * 一定要登記進 `scheduledIds`——沒登記的排程 [sync] 看不見也取消不掉，
+     * 那正是「鬧鐘都關了它還是響」的來源。
+     */
     fun snooze(ctx: Context, id: String, label: String, minutes: Int) {
         val at = System.currentTimeMillis() + minutes * 60_000L
-        schedule(ctx, TYPE_ALARM, "$id#snooze", label, "", at)
+        val sid = "$id$SNOOZE_SUFFIX"
+        schedule(ctx, TYPE_ALARM, sid, label, "", at)
+        val prefs = Prefs(ctx)
+        prefs.scheduledIds = prefs.scheduledIds + sid
+    }
+
+    /** 貪睡響過了就把登記拿掉，免得清單裡一直留著一個早就不存在的排程。 */
+    fun forgetSnooze(ctx: Context, sid: String) {
+        val prefs = Prefs(ctx)
+        prefs.scheduledIds = prefs.scheduledIds - sid
     }
 
     // ── 下一次該響的時刻 ────────────────────────────────────────────────

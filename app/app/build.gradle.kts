@@ -17,7 +17,7 @@ android {
         versionName = "0.1"
 
         // ML Kit 的翻譯引擎帶 native lib，四種架構全打包會讓 APK 從 10MB 漲到 75MB。
-        // 只留 arm64-v8a：2019 年後出的 Android 手機一律是這個架構。
+        // 只留 arm64-v8a：現役 Android 手機一律是這個架構，而這支 App 只裝在他自己手機上。
         // 要裝到模擬器或舊 32 位裝置時再把 armeabi-v7a 加回來。
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -61,6 +61,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+    // extended 才有翻譯／螢幕／收件匣這些圖示，core 只給約四十個最通用的。
+    // 沒開 minify 所以整包都會進 APK（約 +9MB）——工具頁與設定頁靠圖示分辨，
+    // 四張純文字卡片排下來就是四個灰方塊，這個交換划算。
+    implementation("androidx.compose.material:material-icons-extended")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // 網路：okhttp-sse 原生支援 Last-Event-ID 續傳，這是選 SSE 而非 WebSocket 的原因之一
@@ -68,6 +72,20 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // 桌面 widget。Glance 是用 Compose 語法寫 RemoteViews，不是真的 Compose——
+    // 能用的元件只有 Column/Row/Box/Text/LazyColumn 那幾個，沒有 Canvas、沒有動畫。
+    implementation("androidx.glance:glance-appwidget:1.1.1")
+
+    // 用量 widget 要自己定時去拉（課表與行程吃 agendaCache，不需要）。
+    // 用 WorkManager 而不是 AlarmManager：這件事晚幾分鐘無所謂，
+    // 讓系統併到別人的喚醒窗口比較省電。
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // 定位：助理問「你在哪」時抓一次。用 Fused 而不是原生 LocationManager——
+    // 原生的一次性 API 是 API 30 才有，minSdk 26 只能用已棄用的訂閱式 API 自己收尾，
+    // 而忘記取消訂閱就變成背景一直在定位，那正是這個設計要避免的。
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 
     // 面對面翻譯：ML Kit 的 on-device 翻譯，語言包各約 30MB、下載後完全離線。
     // 語音轉文字與朗讀都用系統內建（SpeechRecognizer / TextToSpeech），不必額外依賴。

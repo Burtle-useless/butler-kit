@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -77,8 +78,10 @@ fun DictateKey(onText: (String) -> Unit, modifier: Modifier = Modifier) {
 
     val listening = heard is Heard.Listening
     Box(
+        // 方框墨線，收音中換朱紅框——印刷風的按鈕是框不是圓（同輸入列其他鈕）
         modifier.size(44.dp)
-            .background(if (listening) Palette.AccentSoft else Palette.Surface, CircleShape)
+            .background(if (listening) Palette.AccentSoft else Palette.Bg)
+            .border(1.dp, if (listening) Palette.Accent else Palette.Line)
             .clickable {
                 when {
                     listening -> speech.stop()

@@ -1,5 +1,6 @@
 package dev.butlerkit.app.alarm
 
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
@@ -71,10 +72,32 @@ class RingService : Service() {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setOngoing(true)
-            // 鎖屏或螢幕關著時，這個意圖會被系統直接拉成全螢幕畫面
-            .setFullScreenIntent(ringIntent(id, label, time), true)
+            // 鎖屏或螢幕關著時，這個意圖會被系統直接拉成全螢幕畫面。
+            //
+            // Android 14 起這需要 USE_FULL_SCREEN_INTENT 的**執行期許可**——
+            // 安裝時只自動給「核心功能是鬧鐘或通話」的 App，而使用者仍可在設定裡關掉。
+            // 關掉之後 setFullScreenIntent 不報錯也不生效，只會降級成一般橫幅：
+            // 鬧鐘照響，但螢幕不會亮起來、也沒有那個蓋滿畫面的關閉鈕。
+            // 這裡至少把它記進 log，不然睡過頭之後完全查不出原因。
+            .apply {
+                if (canFullScreen()) {
+                    setFullScreenIntent(ringIntent(id, label, time), true)
+                } else {
+                    Log.w(
+                        ButlerClient.TAG,
+                        "沒有全螢幕通知許可，鬧鐘只會出現橫幅不會蓋滿畫面",
+                    )
+                }
+            }
             .setContentIntent(ringIntent(id, label, time))
             .build()
+
+    /** Android 14 以下一律可用；14 起要問系統。 */
+    private fun canFullScreen(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return true
+        val nm = getSystemService(NotificationManager::class.java) ?: return false
+        return nm.canUseFullScreenIntent()
+    }
 
     private fun ringIntent(id: String, label: String, time: String): PendingIntent {
         val i = Intent(this, RingActivity::class.java).apply {

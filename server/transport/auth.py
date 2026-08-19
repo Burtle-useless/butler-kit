@@ -14,27 +14,55 @@ import hmac
 import json
 import os
 import secrets
+import threading
 import time
 
 from fastapi import Header, HTTPException
 
 import config
-from util import atomic_write_text
+from util import atomic_write_text, read_text_with_retry
+
+# devices.json 的存取要互斥。沒有這道鎖時有兩個災情：
+#   ① verify 與 revoke 交錯——verify 在 revoke 寫入**之前**載入舊資料、在其
+#      **之後**整份寫回，撤銷掉的裝置就這樣靜默復活。手機遺失後從另一台撤銷，
+#      被偷的那台只要還在送 SSE 重連請求就有機會把自己寫回來。
+#   ② 在 Windows 上更直接：只要有人正開著 devices.json 在讀，`os.replace`
+#      就會 PermissionError（WinError 5），撤銷不是失效而是整個拋例外。
+#      2026-08-17 以 tests/test_devices.py 實測到。
+# 所以**讀跟寫都要進鎖**，光鎖寫入擋不住第二種。
+# 用 RLock 是因為 revoke／ensure_token 要把「讀-改-寫」整段圈起來，
+# 而它們內部呼叫的 _load／_save 自己也會取鎖。
+_LOCK = threading.RLock()
+
+# 最後活動時間只放記憶體，不落磁碟。這個欄位是給人看的，不是安全邊界，
+# 卻讓**每一個**請求都要整份讀寫一次 JSON——那既是上面那個競態的來源，
+# 也是 SSE 重連時無謂的磁碟 I/O。重啟後歸零可以接受。
+_LAST_SEEN: dict[str, float] = {}
 
 
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def hash_of(token: str) -> str:
+    """明文 token 的雜湊。給撤銷介面比對「這是不是你自己這台」用。"""
+    return _hash(token)
+
+
 def _load() -> dict:
-    try:
-        return json.loads(config.DEVICES_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {"devices": {}, "revoked": []}
+    with _LOCK:
+        try:
+            # 用重試版讀：讀不到就回預設空清單，而 ensure_token 看到空清單會
+            # 生一把新 token 存回去——已註冊的裝置就這樣全部被踢掉。
+            return json.loads(read_text_with_retry(config.DEVICES_FILE))
+        except Exception:
+            return {"devices": {}, "revoked": []}
 
 
 def _save(data: dict) -> None:
-    atomic_write_text(config.DEVICES_FILE, json.dumps(data, ensure_ascii=False, indent=2))
+    with _LOCK:
+        atomic_write_text(config.DEVICES_FILE,
+                          json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def ensure_token() -> tuple[str, bool]:
@@ -48,14 +76,15 @@ def ensure_token() -> tuple[str, bool]:
     env = (os.environ.get("BUTLER_TOKEN") or "").strip()
     if env:
         return env, False
-    data = _load()
-    if data.get("devices"):
-        return "", False
-    plain = secrets.token_urlsafe(24)
-    data["devices"][_hash(plain)] = {
-        "name": "first", "created": time.time(), "last_seen": None,
-    }
-    _save(data)
+    with _LOCK:
+        data = _load()
+        if data.get("devices"):
+            return "", False
+        plain = secrets.token_urlsafe(24)
+        data["devices"][_hash(plain)] = {
+            "name": "first", "created": time.time(), "last_seen": None,
+        }
+        _save(data)
     return plain, True
 
 
@@ -63,22 +92,43 @@ def device_count() -> int:
     return len(_load().get("devices", {}))
 
 
+def list_devices() -> list[dict]:
+    """列出已授權裝置，給撤銷介面用。
+
+    **只回雜湊，不回也回不了明文**——伺服器從來沒存過明文。
+    雜湊本身不是憑證，拿到它撤銷不了別人也登入不了。
+    """
+    data = _load()
+    out = []
+    for h, dev in (data.get("devices") or {}).items():
+        out.append({
+            "hash": h,
+            "short": h[:8],
+            "name": dev.get("name") or "",
+            "created": dev.get("created"),
+            "last_seen": _LAST_SEEN.get(h),
+        })
+    return sorted(out, key=lambda d: d.get("created") or 0)
+
+
 def verify(token: str) -> bool:
     """比對 token。用 compare_digest 避免時序側channel。"""
     if not token:
         return False
     env = (os.environ.get("BUTLER_TOKEN") or "").strip()
-    if env and hmac.compare_digest(token, env):
+    # 比雜湊不比明文。`compare_digest` 收兩個 str 時要求**兩邊都是 ASCII**，
+    # 只要有人送 `Authorization: Bearer 中文` 就拋 TypeError——那不是 401 而是 500，
+    # 等於未認證的請求就能把任何端點打爆並在日誌裡留下 traceback。
+    # 雜湊出來一律是 64 個 hex 字元，順便讓比較長度固定，定時安全性不變。
+    if env and hmac.compare_digest(_hash(token), _hash(env)):
         return True
     data = _load()
     h = _hash(token)
     if h in data.get("revoked", []):
         return False
-    dev = data.get("devices", {}).get(h)
-    if dev is None:
+    if h not in data.get("devices", {}):
         return False
-    dev["last_seen"] = time.time()
-    _save(data)
+    _LAST_SEEN[h] = time.time()      # 只記在記憶體，不寫檔（見上面 _LAST_SEEN）
     return True
 
 
@@ -88,12 +138,14 @@ def revoke(token_hash: str) -> bool:
     應用層撤銷與 Tailscale 的裝置移除**兩層都要做**——ACL 變更有傳播延遲，
     而且你可能剛好連不上 admin console。
     """
-    data = _load()
-    if token_hash not in data.get("devices", {}):
-        return False
-    data.setdefault("revoked", []).append(token_hash)
-    data["devices"].pop(token_hash, None)
-    _save(data)
+    with _LOCK:
+        data = _load()
+        if token_hash not in data.get("devices", {}):
+            return False
+        data.setdefault("revoked", []).append(token_hash)
+        data["devices"].pop(token_hash, None)
+        _save(data)
+    _LAST_SEEN.pop(token_hash, None)
     return True
 
 

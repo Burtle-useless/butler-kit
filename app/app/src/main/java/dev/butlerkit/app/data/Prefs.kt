@@ -2,6 +2,9 @@ package dev.butlerkit.app.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 
 /**
  * 連線設定與續傳游標。
@@ -26,12 +29,32 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putString(KEY_TOKEN, v).apply()
 
     /**
-     * 最後收到的事件序號，重連時當 Last-Event-ID 用。
+     * **畫面**最後收到的事件序號，前景重連時當 Last-Event-ID 用。
      * 沒有它的話 App 一切到背景就會漏掉整段回覆——這是續傳的錨點。
+     *
+     * 只有 ChatViewModel 能動它。背景服務用 [bgSeq]，兩者不可共用，理由見下。
      */
     var lastSeq: Long
         get() = sp.getLong(KEY_LAST_SEQ, -1L)
         set(v) = sp.edit().putLong(KEY_LAST_SEQ, v).apply()
+
+    /**
+     * **背景服務**的續傳游標，只用來決定「哪些事件還沒推播過」。
+     *
+     * 為什麼要跟 [lastSeq] 分開：兩條連線同時只會有一條在跑（前景 ViewModel／
+     * 背景 ButlerService），但它們的職責完全不同——ViewModel 維護聊天軌跡，
+     * ButlerService 只發通知，**不存任何內容**。共用一個游標時，背景收到的事件
+     * 會把游標推過頭，使用者點通知回到前景，ViewModel 帶著這個游標重連，伺服器
+     * 判定「那些你都收過了」而不重播；ViewModel 手上卻一則都沒有。
+     * 而 `loadSnapshot` 的兜底條件是「本地為空才填歷史」，App 進程還活著、
+     * 軌跡不為空，於是歷史也不補——那段對話就永久卡在兩條連線的交接縫裡。
+     *
+     * 症狀是使用者 2026-08-17 回報的「通知看得到內容，跳進 App 什麼都沒有」。
+     * 分家之後前景會把背景期間的事件整段補回來，畫面才對得上通知。
+     */
+    var bgSeq: Long
+        get() = sp.getLong(KEY_BG_SEQ, -1L)
+        set(v) = sp.edit().putLong(KEY_BG_SEQ, v).apply()
 
     /**
      * 上次拉到的行事曆／鬧鐘／記帳原始 JSON。
@@ -43,6 +66,42 @@ class Prefs(context: Context) {
     var agendaCache: String
         get() = sp.getString(KEY_AGENDA, "") ?: ""
         set(v) = sp.edit().putString(KEY_AGENDA, v).apply()
+
+    /**
+     * 上次拉到的用量原始 JSON，給桌面 widget 用。
+     *
+     * 行事曆那份快取是為了重開機，這份是為了**widget 沒有網路可等**：
+     * widget 每次重畫只有幾秒的時間可以出畫面，來不及發一趟 HTTP。
+     * 所以由 UsageWorker 在背景拉好放這裡，widget 只負責畫。
+     * 拉的時間一併存 [usageAt]，畫面上要標「幾分鐘前」——一個沒有時間戳的
+     * 用量數字看起來永遠是即時的，那會騙人。
+     */
+    var usageCache: String
+        get() = sp.getString(KEY_USAGE, "") ?: ""
+        set(v) = sp.edit().putString(KEY_USAGE, v).apply()
+
+    var usageAt: Long
+        get() = sp.getLong(KEY_USAGE_AT, 0L)
+        set(v) = sp.edit().putLong(KEY_USAGE_AT, v).apply()
+
+    /**
+     * 快取變動時吐出新內容的流。**桌面 widget 專用**。
+     *
+     * 為什麼需要：Glance 的 `provideGlance` 只在 session 建立時跑一次，在那裡讀到的
+     * 值會被寫死進 composition。session 是常駐的，所以之後不管收到幾次更新請求，
+     * 畫面重組用的都還是最初那份快取——實測就是「加課看得到、刪課刪不掉」。
+     * 讓 composition 直接訂閱這個流，資料換了它自己會重組。
+     *
+     * 一開始先發一次現值，訂閱者不必自己補第一筆。
+     */
+    fun watch(key: String): Flow<String> = callbackFlow {
+        trySend(sp.getString(key, "") ?: "")
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { p, k ->
+            if (k == key) trySend(p.getString(k, "") ?: "")
+        }
+        sp.registerOnSharedPreferenceChangeListener(listener)
+        awaitClose { sp.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
 
     /**
      * 這段「助理正在忙」是什麼時候開始的（epoch 毫秒，0＝現在不忙）。
@@ -85,7 +144,11 @@ class Prefs(context: Context) {
         private const val KEY_HOST = "host"
         private const val KEY_TOKEN = "token"
         private const val KEY_LAST_SEQ = "last_seq"
-        private const val KEY_AGENDA = "agenda_cache"
+        private const val KEY_BG_SEQ = "bg_seq"
+        // 這兩個不是 private：widget 要拿它們去 [watch] 訂閱對應的那份快取
+        const val KEY_AGENDA = "agenda_cache"
+        const val KEY_USAGE = "usage_cache"
+        private const val KEY_USAGE_AT = "usage_at"
         private const val KEY_SCHEDULED = "scheduled_ids"
         private const val KEY_BUSY_SINCE = "busy_since"
         private const val KEY_TALK_MINE = "talk_mine"

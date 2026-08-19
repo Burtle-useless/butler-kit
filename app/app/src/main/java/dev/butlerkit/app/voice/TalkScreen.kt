@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -34,6 +36,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.butlerkit.app.ui.IconBtn
 import dev.butlerkit.app.ui.Palette
 import dev.butlerkit.app.ui.Radii
 import dev.butlerkit.app.ui.Space
@@ -297,10 +300,7 @@ private fun Divider(
             "清空", color = Palette.TextDim, fontSize = Type.Meta,
             modifier = Modifier.clickable { onClear() }.padding(8.dp),
         )
-        Text(
-            "✕", color = Palette.TextDim, fontSize = 18.sp,
-            modifier = Modifier.clickable { onClose() }.padding(start = 8.dp),
-        )
+        IconBtn(Icons.Filled.Close, "關掉翻譯", onClick = onClose)
     }
 }
 

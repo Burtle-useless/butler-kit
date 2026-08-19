@@ -1,6 +1,7 @@
 package dev.butlerkit.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,8 +10,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -20,8 +26,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.butlerkit.app.data.InboxRepo
 import dev.butlerkit.app.net.ButlerClient
@@ -46,17 +54,24 @@ fun InboxCard(client: ButlerClient) {
 
     Column(
         Modifier.fillMaxWidth().background(Palette.Surface, Radii.Card)
+            // 這張卡原本沒有邊框，跟它下面三張工具卡並排時會像少了一層
+            .border(1.dp, Palette.Line, Radii.Card)
             .padding(Space.Inner),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("助理傳來的檔案", color = Palette.Text, fontSize = Type.Body,
-                modifier = Modifier.weight(1f))
+            // Type.Head 而不是 Title：這頁下面三個工具的標題才是 Title。
+            // 它是唯一會自己冒出新東西的區塊，字級要比使用者主動來找的東西大一階
+            Text(
+                "助理傳來的檔案", color = Palette.Text, fontSize = Type.Head,
+                fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f),
+            )
             Text(
                 "重新整理", color = Palette.Accent, fontSize = Type.Tiny,
-                modifier = Modifier.clickable {
-                    scope.launch { InboxRepo.refresh(client) }
-                }.padding(4.dp),
+                modifier = Modifier.minimumInteractiveComponentSize()
+                    .clip(Radii.Chip)
+                    .clickable { scope.launch { InboxRepo.refresh(client) } }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
 
@@ -86,13 +101,22 @@ fun InboxCard(client: ButlerClient) {
             )
         }
         if (files.size > COLLAPSED) {
-            Text(
-                if (expanded) "收起 ▴" else "還有 ${files.size - COLLAPSED} 個 ▾",
-                color = Palette.Accent, fontSize = Type.Tiny,
-                modifier = Modifier.fillMaxWidth()
+            Row(
+                Modifier.fillMaxWidth()
+                    .clip(Radii.Chip)
                     .clickable { expanded = !expanded }
-                    .padding(vertical = 4.dp),
-            )
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (expanded) "收起" else "還有 ${files.size - COLLAPSED} 個",
+                    color = Palette.Accent, fontSize = Type.Tiny,
+                )
+                Icon(
+                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    null, tint = Palette.Accent, modifier = Modifier.size(16.dp),
+                )
+            }
         }
     }
 }
@@ -107,15 +131,21 @@ private fun FileRow(
     savedAt: String?,
     onDownload: () -> Unit,
 ) = Row(
-    Modifier.fillMaxWidth().background(Palette.SurfaceHi, Radii.Chip)
-        .padding(horizontal = 10.dp, vertical = 9.dp),
+    // Radii.Field 不是 Chip：備註一長、或系統字體放大到 1.3 倍，第二行就會折成兩行，
+    // 999dp 的全膠囊跟著漲成一顆巨大藥丸，右邊的「下載」還會變成正圓。
+    // 這一列的高度是內容決定的，不能用只在單行成立的形狀
+    Modifier.fillMaxWidth().background(Palette.SurfaceHi, Radii.Field)
+        .padding(horizontal = 12.dp, vertical = 10.dp),
     verticalAlignment = Alignment.CenterVertically,
+    // 文字欄吃掉所有剩餘寬度，不留這道縫的話備註會直接貼上「下載」
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
 ) {
-    Column(Modifier.weight(1f)) {
+    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(
             file.name,
             color = if (file.gone) Palette.TextFaint else Palette.Text,
-            fontSize = Type.Meta, maxLines = 1, fontWeight = FontWeight.Medium,
+            fontSize = Type.Meta, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            fontWeight = FontWeight.Medium,
         )
         // 第二行輪流講最重要的那件事：存好了 > 原檔不在了 > 備註 > 大小與時間
         Text(
@@ -130,7 +160,9 @@ private fun FileRow(
                 file.gone -> Palette.Danger
                 else -> Palette.TextFaint
             },
-            fontSize = Type.Tiny, maxLines = 2,
+            // 截斷一定要有刪節號。少了它讀起來像資料只存到一半
+            fontSize = Type.Tiny, lineHeight = Type.TinyLine, maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
     when {
@@ -138,11 +170,12 @@ private fun FileRow(
             Modifier.size(18.dp), color = Palette.Accent, strokeWidth = 2.dp,
         )
         file.gone -> Unit
+        // 同樣不用 Chip：「下載」只有兩個字，全膠囊會把它捏成一顆正圓
         else -> Box(
-            Modifier.background(
-                if (savedAt != null) Palette.Surface else Palette.Accent, Radii.Chip,
-            ).clickable(onClick = onDownload)
-                .padding(horizontal = 12.dp, vertical = 7.dp),
+            Modifier.clip(Radii.Field)
+                .background(if (savedAt != null) Palette.Surface else Palette.Accent)
+                .clickable(onClick = onDownload)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             Text(
                 if (savedAt != null) "再存一次" else "下載",

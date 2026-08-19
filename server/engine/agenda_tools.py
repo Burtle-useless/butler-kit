@@ -49,6 +49,10 @@ def _schema(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
 
 _NOW_HINT = "格式 YYYY-MM-DDTHH:MM，用本機時間，不要帶時區"
 
+# 一次工具回傳最多幾筆。工具的輸出會原封不動進 context，沒有上限的清單
+# 累積個一兩年就足以把整個 session 撐爆（見 calendar_list 的說明）。
+_LIST_MAX = 200
+
 
 # ── 行事曆 ───────────────────────────────────────────────────────────────────
 @tool(
@@ -68,7 +72,9 @@ async def calendar_add(args: dict[str, Any]) -> dict[str, Any]:
         item = store.add_event(
             title=args["title"], start=args["start"],
             end=args.get("end"), note=args.get("note", ""),
-            remind_min=int(args.get("remind_min", 10)),
+            # 不在這裡 int()：助理傳「稍後」這種東西進來時，ValueError 會穿過
+            # 下面只接 AgendaError 的 except 變成 SDK 例外，它就看不到能自我修正的訊息
+            remind_min=args.get("remind_min", 10),
         )
     except store.AgendaError as e:
         return _err(str(e))
@@ -84,8 +90,26 @@ async def calendar_add(args: dict[str, Any]) -> dict[str, Any]:
     }, []),
 )
 async def calendar_list(args: dict[str, Any]) -> dict[str, Any]:
-    rows = store.list_kind("events") if args.get("all") else store.upcoming()
-    return _ok({"now": datetime.now().strftime("%Y-%m-%dT%H:%M"), "events": rows})
+    out: dict[str, Any] = {"now": datetime.now().strftime("%Y-%m-%dT%H:%M")}
+    if not args.get("all"):
+        out["events"] = store.upcoming()
+        return _ok(out)
+
+    # all=true 原本沒有任何上限，那是 context 被撐爆的來源：一天三筆、累積兩年
+    # 就是兩千筆，一次工具回傳可以到數十萬 token，直接把 session 打成
+    # CONTEXT_FULL 而重置。`upcoming()` 早就有 limit 20、`ledger_list` 也做了
+    # min(limit, 200)，只有這條漏掉。
+    # 截尾端而不是開頭：events 依 start 升冪排，問「以前的行程」幾乎都是在問
+    # 最近發生過什麼，最舊的那幾百筆反而是最不需要的。
+    rows = store.list_kind("events")
+    total = len(rows)
+    if total > _LIST_MAX:
+        rows = rows[-_LIST_MAX:]
+        # 明講被截掉了，否則助理會把「查到的」當成「全部」，
+        # 回答「你今年沒有其他行程」這種完全錯誤的話。
+        out["truncated"] = f"共 {total} 筆，只給最近的 {_LIST_MAX} 筆"
+    out["events"] = rows
+    return _ok(out)
 
 
 @tool(
@@ -238,7 +262,10 @@ async def ledger_summary(args: dict[str, Any]) -> dict[str, Any]:
     }, []),
 )
 async def ledger_list(args: dict[str, Any]) -> dict[str, Any]:
-    limit = max(1, min(int(args.get("limit", 30)), 200))
+    try:
+        limit = max(1, min(int(args.get("limit", 30)), 200))
+    except (TypeError, ValueError):
+        return _err("limit 要是數字，例如 30")
     return _ok({"entries": store.list_kind("ledger")[:limit]})
 
 
@@ -357,7 +384,7 @@ async def course_remove(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "period_set",
-    "設定節次時間表（第幾節是幾點到幾點）。每個學校不一樣，他說「我們第一節是八點」"
+    "設定節次時間表（第幾節是幾點到幾點）。每個地方不一樣，他說「我們第一節是八點」"
     "這種就用這個。**要給完整的一整份**，沒列到的節次會消失，所以先用 course_list "
     "把現有的讀出來，改完再整份送回。",
     _schema({
@@ -399,6 +426,3 @@ SERVER_NAME = "agenda"
 SERVER = create_sdk_mcp_server(
     name=SERVER_NAME, version="1.0.0", tools=ALL_TOOLS,
 )
-
-# CC 看到的工具全名長這樣，寫進 system prompt 時要用全名它才對得起來
-QUALIFIED = [f"mcp__{SERVER_NAME}__{t.name}" for t in ALL_TOOLS]

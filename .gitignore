@@ -16,6 +16,8 @@ app/app/build/
 keystore.properties
 
 # ── 建置產物 ─────────────────────────────────────────────────────────────────
+# 驗字腳本的輸出，跑一次覆蓋一次
+tools/verify_hanzi_out.txt
 *.apk
 *.aab
 dist/

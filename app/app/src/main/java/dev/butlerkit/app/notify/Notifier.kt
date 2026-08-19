@@ -122,6 +122,21 @@ object Notifier {
         )
     }
 
+    /** 子通知被滑掉時回來重算摘要的落點。見 [NotifyDismissReceiver]。 */
+    private fun dismissIntent(ctx: Context, notifId: Int): PendingIntent {
+        val i = Intent(ctx, NotifyDismissReceiver::class.java)
+            .putExtra(NotifyDismissReceiver.EXTRA_ID, notifId)
+        return PendingIntent.getBroadcast(
+            ctx, notifId, i,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /** 子通知被滑掉之後重算摘要。[gone] 是剛被移除的那一則，避免它還列在 active 裡。 */
+    internal fun onChildDismissed(ctx: Context, gone: Int) {
+        syncSummary(ctx, setOf(gone))
+    }
+
     fun notify(
         ctx: Context,
         kind: NotifyKind,
@@ -157,6 +172,10 @@ object Notifier {
                 }
                 if (kind.grouped) {
                     setGroup(GROUP_CHAT)
+                    // 被滑掉時要能收到消息。系統移除子通知不會通知 App，摘要於是
+                    // 留在那裡說「3 則」而底下一則都不剩——點開什麼都沒有的空殼。
+                    // 點掉那條路有 App 啟動時的 clearSeen 兜著，滑掉這條原本沒人接。
+                    setDeleteIntent(dismissIntent(ctx, idOf(kind, convId)))
                     // 出聲的是子通知本身，摘要只負責摺疊。這個值必須在摘要與
                     // 每一則子通知上都設成一樣，只設一邊不會生效。
                     setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)

@@ -5,6 +5,14 @@ import asyncio
 import io
 
 
+class ScreenshotError(RuntimeError):
+    """截不到畫面。訊息是寫給人看的，端點直接透出去。
+
+    分出一個型別而不是回 None：呼叫端要能把「螢幕鎖著」跟「服務掛了」講清楚。
+    人在外面看到 500 只會以為電腦當機，然後白跑一趟回家。
+    """
+
+
 def _grab_sync(all_screens: bool) -> bytes:
     """截目前螢幕畫面，回 PNG bytes。
 
@@ -14,7 +22,16 @@ def _grab_sync(all_screens: bool) -> bytes:
     """
     from PIL import ImageGrab
 
-    img = ImageGrab.grab(all_screens=all_screens)
+    # 鎖屏、UAC 的安全桌面、切換使用者時，GDI 抓不到桌面：ImageGrab 會拋
+    # OSError，或更討厭的——回一張全黑但「成功」的圖。前者原本一路變成 500。
+    try:
+        img = ImageGrab.grab(all_screens=all_screens)
+    except OSError as e:
+        raise ScreenshotError(
+            "截不到畫面，電腦多半是鎖屏了（或正停在 UAC 的安全桌面）。"
+            f"解鎖之後再試一次。（{e}）") from e
+    if img is None:
+        raise ScreenshotError("截不到畫面，電腦多半是鎖屏了。解鎖之後再試一次。")
     # 手機看不需要原尺寸；雙螢幕拼起來寬度會超過 3000px，等比縮到 1600 寬省流量
     if img.width > 1600:
         ratio = 1600 / img.width

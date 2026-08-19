@@ -1,9 +1,11 @@
 package dev.butlerkit.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -30,39 +32,44 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.LaunchedEffect
 import dev.butlerkit.app.data.Prefs
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.notify.Notifier
+import dev.butlerkit.app.ui.ActionButton
 import dev.butlerkit.app.ui.AgendaScreen
+import dev.butlerkit.app.ui.ButlerColors
 import dev.butlerkit.app.ui.ChatScreen
 import dev.butlerkit.app.ui.ChatViewModel
 import dev.butlerkit.app.ui.PetFace
 import dev.butlerkit.app.ui.Palette
 import dev.butlerkit.app.ui.PetMood
+import dev.butlerkit.app.ui.SerifProbe
 import dev.butlerkit.app.ui.SettingsScreen
 import dev.butlerkit.app.ui.ToolsScreen
 import dev.butlerkit.app.ui.Type
@@ -87,7 +94,43 @@ private enum class Tab(val label: String, val icon: ImageVector?) {
     Tools("工具", Icons.Filled.Build),
 }
 
+/**
+ * 從通知或桌面 widget 帶進來的導航目標。
+ *
+ * [stamp] 存在的理由：同一張 widget 連點兩次，conv/tab/sub 三個欄位一模一樣，
+ * 沒有它的話 `LaunchedEffect(nav)` 認為狀態沒變而不重跑——使用者自己切走之後
+ * 再點同一張 widget 就沒反應。它只是「這是新的一次點擊」的識別。
+ */
+private data class Nav(
+    val conv: String? = null,
+    val tab: String? = null,
+    val sub: String? = null,
+    val stamp: Long = 0L,
+)
+
+private fun Intent.toNav(): Nav = Nav(
+    conv = getStringExtra(Notifier.EXTRA_CONV),
+    tab = getStringExtra(MainActivity.EXTRA_TAB),
+    sub = getStringExtra(MainActivity.EXTRA_SUB),
+    stamp = SystemClock.elapsedRealtime(),
+)
+
 class MainActivity : ComponentActivity() {
+
+    /**
+     * 目前要跳去哪。
+     *
+     * 必須是 state 而不是每次讀 `intent`：Activity 已經開著時，從 widget 或通知
+     * 進來走的是 [onNewIntent]，setContent 那段**不會**重跑，直接讀 intent 的話
+     * 畫面永遠停在第一次啟動時的那個目標。
+     */
+    private val nav = mutableStateOf(Nav())
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        nav.value = intent.toNav()
+    }
 
     /** 通知權限（Android 13+ 要執行期同意）。拒絕了也不擋 App，只是背景通知會失效。 */
     private val askNotify = registerForActivityResult(
@@ -110,6 +153,7 @@ class MainActivity : ComponentActivity() {
         // 視窗，Compose 的 imePadding 再墊一次鍵盤高度——雙重讓位，輸入列懸在半空
         enableEdgeToEdge()
         ensureNotifyPermission()
+        nav.value = intent?.toNav() ?: Nav()
         val prefs = Prefs(applicationContext)
         Log.i(
             ButlerClient.TAG,
@@ -117,29 +161,41 @@ class MainActivity : ComponentActivity() {
                 "tokenLen=${prefs.token.length} lastSeq=${prefs.lastSeq}",
         )
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(
-                surface = Palette.Surface,
-                background = Palette.Bg,
-            )) {
-                var configured by remember { mutableStateOf(prefs.isConfigured()) }
-                if (!configured) {
-                    SetupScreen(prefs) { configured = true }
-                } else {
-                    Root(prefs, intent?.getStringExtra(Notifier.EXTRA_CONV))
+            MaterialTheme(colorScheme = ButlerColors) {
+                // 全 App 預設襯線（報紙內文是明體）。這裡鋪一層 LocalTextStyle，
+                // 沒指定 fontFamily 的 Text 全部吃到；時間、統計那類欄外資訊
+                // 要在各自的 Text 上明確指定無襯線（FontFamily.SansSerif）。
+                ProvideTextStyle(TextStyle(fontFamily = SerifProbe.Serif)) {
+                    var configured by remember { mutableStateOf(prefs.isConfigured()) }
+                    if (!configured) {
+                        SetupScreen(prefs) { configured = true }
+                    } else {
+                        Root(prefs, nav.value)
+                    }
                 }
             }
         }
     }
+
+    companion object {
+        /** widget 點擊帶的目的地。值見 `widget/WidgetUi.kt` 的 TAB_/SUB_ 常數。 */
+        const val EXTRA_TAB = "open_tab"
+        const val EXTRA_SUB = "open_sub"
+    }
 }
 
 @Composable
-private fun Root(prefs: Prefs, openConv: String? = null) {
+private fun Root(prefs: Prefs, nav: Nav = Nav()) {
     val vm: ChatViewModel = viewModel()
     val state by vm.state.collectAsState()
     var tab by remember { mutableStateOf(Tab.Qi) }
     // 設定不是分頁而是蓋上來的一層：它離開底欄之後，如果還混在 tab 狀態裡，
     // 底欄會出現「四格全都沒選中」的空窗畫面。
     var settingsOpen by remember { mutableStateOf(false) }
+    // widget 指定的子分頁。日常頁切過去之後就清掉，見 AgendaScreen 的 onSubConsumed
+    var pendingSub by remember { mutableStateOf<String?>(null) }
+    // 每個分頁各自的狀態保管處，見下面 SaveableStateProvider 的說明
+    val tabStates = rememberSaveableStateHolder()
 
     // 分頁決定看哪個對話：助理頁固定那條專屬對話，cc-bot 頁回到上次選的
     LaunchedEffect(tab) {
@@ -150,15 +206,27 @@ private fun Root(prefs: Prefs, openConv: String? = null) {
         }
     }
 
-    // 從通知點進來：切到那個對話，並落在它所屬的分頁
-    LaunchedEffect(openConv) {
-        openConv?.takeIf { it.isNotBlank() }?.let {
+    // 從通知或 widget 點進來：落在該去的分頁。
+    // 通知帶對話 id、widget 帶分頁名，兩者不會同時出現
+    LaunchedEffect(nav) {
+        nav.conv?.takeIf { it.isNotBlank() }?.let {
             if (it == ChatViewModel.DEFAULT_CONV) {
                 tab = Tab.Qi
+                // 顯式再叫一次。上面那個 LaunchedEffect(tab) 只在 tab **變動**時跑，
+                // 而從通知點進來時 tab 常常本來就停在助理頁——那條路上
+                // enterQiTab 不執行，markRead 也就不執行，通知點了不會消失。
+                vm.enterQiTab()
             } else {
                 tab = Tab.CcBot
                 vm.switchCcConversation(it)
             }
+        }
+        when (nav.tab) {
+            "daily" -> {
+                tab = Tab.Daily
+                pendingSub = nav.sub
+            }
+            "tools" -> tab = Tab.Tools
         }
     }
 
@@ -215,7 +283,10 @@ private fun Root(prefs: Prefs, openConv: String? = null) {
                                 color = if (tab == t) Palette.Accent else Palette.TextFaint)
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = Palette.AccentSoft,
+                            // 透明：M3 預設那顆膠囊指示是 Material 的招牌形狀，
+                            // 在報紙版面上像貼了一塊藥丸貼紙。選中狀態交給
+                            // 朱紅字色表達，報紙的「現在在這裡」本來就是紅筆圈的
+                            indicatorColor = Color.Transparent,
                         ),
                     )
                 }
@@ -226,39 +297,47 @@ private fun Root(prefs: Prefs, openConv: String? = null) {
         // 下游的 imePadding 才知道底部已經讓過多少——否則鍵盤高度會跟底欄高度相加，
         // 輸入列懸在鍵盤上方一截
         Column(Modifier.fillMaxSize().padding(pad).consumeWindowInsets(pad)) {
-            when (tab) {
-                Tab.Qi -> ChatScreen(
-                    state = state,
-                    title = "助理",
-                    multiConv = false,
-                    client = vm.client,
-                    onSend = vm::send,
-                    onStop = vm::stop,
-                    onAnswer = vm::answerAsk,
-                    onSwitchConv = vm::switchCcConversation,
-                    onNewConv = vm::newConversation,
-                    onDeleteConv = vm::deleteConversation,
-                    onAttach = vm::attach,
-                    onRemoveAttach = vm::removeAttachment,
-                    onConvSettings = vm::applyConvSettings,
-                )
-                Tab.CcBot -> ChatScreen(
-                    state = state,
-                    title = "工作",
-                    multiConv = true,
-                    client = vm.client,
-                    onSend = vm::send,
-                    onStop = vm::stop,
-                    onAnswer = vm::answerAsk,
-                    onSwitchConv = vm::switchCcConversation,
-                    onNewConv = vm::newConversation,
-                    onDeleteConv = vm::deleteConversation,
-                    onAttach = vm::attach,
-                    onRemoveAttach = vm::removeAttachment,
-                    onConvSettings = vm::applyConvSettings,
-                )
-                Tab.Daily -> AgendaScreen(vm.client)
-                Tab.Tools -> ToolsScreen(vm.client) { settingsOpen = true }
+            // 每個分頁各自保存自己的 rememberSaveable。`when (tab)` 會把離開的那頁
+            // 整個移出組合樹，裡面的狀態預設一律歸零——日常頁切走再回來會跳回
+            // 行事曆、月份重置到本月，工具頁的搜尋結果整個不見。
+            // 只把狀態改成 rememberSaveable 是不夠的：沒有這個 holder 承接，
+            // composable 一離開組合樹它照樣消失。兩件事要一起做。
+            // 聊天頁不靠這個——它的狀態在 ViewModel 裡，本來就活得比畫面久。
+            tabStates.SaveableStateProvider(tab) {
+                when (tab) {
+                    Tab.Qi -> ChatScreen(
+                        state = state,
+                        title = "助理",
+                        multiConv = false,
+                        client = vm.client,
+                        onSend = vm::send,
+                        onStop = vm::stop,
+                        onAnswer = vm::answerAsk,
+                        onSwitchConv = vm::switchCcConversation,
+                        onNewConv = vm::newConversation,
+                        onDeleteConv = vm::deleteConversation,
+                        onAttach = vm::attach,
+                        onRemoveAttach = vm::removeAttachment,
+                        onConvSettings = vm::applyConvSettings,
+                    )
+                    Tab.CcBot -> ChatScreen(
+                        state = state,
+                        title = "工作",
+                        multiConv = true,
+                        client = vm.client,
+                        onSend = vm::send,
+                        onStop = vm::stop,
+                        onAnswer = vm::answerAsk,
+                        onSwitchConv = vm::switchCcConversation,
+                        onNewConv = vm::newConversation,
+                        onDeleteConv = vm::deleteConversation,
+                        onAttach = vm::attach,
+                        onRemoveAttach = vm::removeAttachment,
+                        onConvSettings = vm::applyConvSettings,
+                    )
+                    Tab.Daily -> AgendaScreen(vm.client, pendingSub) { pendingSub = null }
+                    Tab.Tools -> ToolsScreen(vm.client) { settingsOpen = true }
+                }
             }
         }
     }
@@ -276,7 +355,10 @@ private fun SetupScreen(prefs: Prefs, onDone: () -> Unit) {
             Modifier.fillMaxSize().statusBarsPadding().padding(24.dp).imePadding(),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("連線設定", color = Palette.Text, fontSize = 22.sp)
+            Text(
+                "連線設定", color = Palette.Text, fontSize = Type.Display,
+                fontWeight = FontWeight.Bold,
+            )
             Text(
                 "host 填電腦的 Tailscale 位址加 port；token 在電腦端啟動日誌那行 " +
                     "\"device token:\" 後面。",
@@ -292,15 +374,13 @@ private fun SetupScreen(prefs: Prefs, onDone: () -> Unit) {
                 label = { Text("device token") }, singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Button(
-                onClick = {
-                    prefs.host = host.trim()
-                    prefs.token = token.trim()
-                    onDone()
-                },
-                enabled = host.isNotBlank() && token.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("連線") }
+            // 這是使用者看到的第一個畫面，用 App 自己的按鈕而不是 M3 預設的
+            // ——預設 Button 的圓角與字重跟後面每一頁都不一樣
+            ActionButton("連線", host.isNotBlank() && token.isNotBlank()) {
+                prefs.host = host.trim()
+                prefs.token = token.trim()
+                onDone()
+            }
         }
     }
 }

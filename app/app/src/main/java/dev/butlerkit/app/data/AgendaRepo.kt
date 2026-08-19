@@ -6,7 +6,10 @@ import dev.butlerkit.app.alarm.AlarmScheduler
 import dev.butlerkit.app.net.AgendaData
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.MonthSummary
+import dev.butlerkit.app.net.humanError
 import dev.butlerkit.app.net.parseAgenda
+import dev.butlerkit.app.widget.WidgetTick
+import dev.butlerkit.app.widget.Widgets
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +51,8 @@ object AgendaRepo {
         _error.value = null
     }
 
+    private fun human(t: Throwable): String = humanError(t)
+
     /** 冷啟動用：先把上次的快取畫出來，不必等網路。 */
     fun loadCache(ctx: Context) {
         if (_data.value.events.isEmpty() && _data.value.alarms.isEmpty()) {
@@ -66,11 +71,15 @@ object AgendaRepo {
                     Prefs(ctx).agendaCache = raw
                     _data.value = parsed
                     AlarmScheduler.sync(ctx, parsed)
+                    // 桌面 widget 讀的是同一份快取，這裡不刷的話它會一直畫舊資料，
+                    // 直到下一個時間邊界才更新——助理剛加的課要到下課才看得到
+                    Widgets.refreshAgenda(ctx)
+                    WidgetTick.reschedule(ctx)
                 }
             }
             .onFailure {
                 Log.w(ButlerClient.TAG, "拉 agenda 失敗：${it.message}")
-                _error.value = it.message
+                _error.value = human(it)
             }
         _busy.value = false
     }
@@ -87,7 +96,7 @@ object AgendaRepo {
         ctx: Context, client: ButlerClient, kind: String, body: JSONObject,
     ): Boolean {
         val ok = client.addAgenda(kind, body)
-            .onFailure { _error.value = it.message }
+            .onFailure { _error.value = human(it) }
             .isSuccess
         if (ok) refresh(ctx, client)
         return ok
@@ -96,12 +105,12 @@ object AgendaRepo {
     suspend fun patch(
         ctx: Context, client: ButlerClient, kind: String, id: String, body: JSONObject,
     ) {
-        client.patchAgenda(kind, id, body).onFailure { _error.value = it.message }
+        client.patchAgenda(kind, id, body).onFailure { _error.value = human(it) }
         refresh(ctx, client)
     }
 
     suspend fun remove(ctx: Context, client: ButlerClient, kind: String, id: String) {
-        client.deleteAgenda(kind, id).onFailure { _error.value = it.message }
+        client.deleteAgenda(kind, id).onFailure { _error.value = human(it) }
         refresh(ctx, client)
     }
 
@@ -115,7 +124,7 @@ object AgendaRepo {
         ctx: Context, client: ButlerClient, periods: JSONArray,
     ): Boolean {
         val ok = client.putPeriods(periods)
-            .onFailure { _error.value = it.message }
+            .onFailure { _error.value = human(it) }
             .isSuccess
         if (ok) refresh(ctx, client)
         return ok

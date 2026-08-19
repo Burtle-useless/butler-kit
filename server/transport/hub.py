@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import deque
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import config
 from protocol import AskRequest, AskResponse, Event, make_event
@@ -38,6 +38,15 @@ class EventHub:
             w.set()
 
     @property
+    def has_listeners(self) -> bool:
+        """現在有沒有裝置連著 SSE。
+
+        給「發請求出去等手機回」的路徑做快速失敗用：一個訂閱者都沒有時，
+        那個請求註定等到逾時，不如當場承認手機不在線上。
+        """
+        return bool(self._waiters)
+
+    @property
     def latest_seq(self) -> int | None:
         return self._buf[-1].seq if self._buf else None
 
@@ -45,21 +54,35 @@ class EventHub:
     def oldest_seq(self) -> int | None:
         return self._buf[0].seq if self._buf else None
 
+    def is_stale_cursor(self, after_seq: int | None) -> bool:
+        """這個游標是不是上一個世代留下的（也就是中間服務重啟過）。
+
+        序號高位是啟動時間戳，重啟後整批序號都會大於上一世代，比大小就分得出來。
+        """
+        return (after_seq is not None and self._boot_seq is not None
+                and after_seq < self._boot_seq)
+
     def replay_from(self, after_seq: int | None) -> tuple[list[Event], bool]:
         """取出 after_seq 之後的事件。
 
         回傳 (事件清單, 是否有斷層)。斷層＝要補的起點已經被 ring buffer 擠掉了，
         這時前端該改拉 snapshot 而不是假裝自己收齊了。
 
-        **服務重啟不算斷層。** 序號高位是啟動時間戳，重啟後整批序號都會大於上一世代，
-        單看「buffer 起點 > 游標」會把每次重啟都誤報成漏事件——使用者一開 App 就看到
-        「離線太久，內容補不回來了」，其實什麼都沒漏。用 `_boot_seq` 判斷游標是不是
-        上一世代的：是的話當作全新連線處理。
+        **服務重啟既不算斷層、也不重播。** 這兩件事先前被混為一談：因為重啟不該
+        誤報「離線太久」，就順手把整個 buffer 倒給對方——但那些事件屬於上一個世代，
+        前端早就收過、也早就畫在畫面上了。前端沒有 seq 去重，於是整批被當成新事件
+        重畫一次，使用者看到的就是**對話自己倒帶**：幾十分鐘前的訊息一則則重新冒出來，
+        跟 snapshot 補回來的歷史疊在一起。2026-08-17 使用者回報「訊息回溯」。
+
+        `RING_BUFFER_SIZE` 從 2000 提到 6000 之後這個症狀會嚴重三倍，
+        所以修的是重播本身，不是 buffer 大小。
+
+        正確行為是一則都不補：重啟後的權威來源是 snapshot（它直接讀 CC 的逐字稿），
+        ring buffer 裡的上一世代事件沒有任何補充價值。呼叫端用 `is_stale_cursor`
+        判斷要不要通知前端重新對齊。
         """
-        if after_seq is None:
+        if after_seq is None or self.is_stale_cursor(after_seq):
             return [], False
-        if self._boot_seq is not None and after_seq < self._boot_seq:
-            return list(self._buf), False       # 上一世代的游標：整批給它，不算斷層
         gap = bool(self._buf) and self._buf[0].seq > after_seq + 1
         return [e for e in self._buf if e.seq > after_seq], gap
 
@@ -69,9 +92,16 @@ class EventHub:
         心跳是必要的：OkHttp 預設 10 秒讀取逾時，而 CC 思考期間可能 30 秒沒有任何
         輸出，沒有心跳的話 client 會自己掐斷連線然後無限重連。
         """
+        stale = self.is_stale_cursor(after_seq)
         pending, gap = self.replay_from(after_seq)
         cursor = after_seq
-        if gap:
+        if stale:
+            # 服務重啟過。不補任何舊事件（見 replay_from），改叫前端以 snapshot 對齊，
+            # 並把游標直接推到最新——否則下一圈的「待送檢查」會拿舊游標比對整個
+            # buffer，等於繞過 replay_from 把重播原封不動做一次。
+            yield make_event("", "", "stream.reset")
+            cursor = self.latest_seq or 0
+        elif gap:
             first = self._buf[0].seq if self._buf else 0
             yield make_event("", "", "seq.gap", **{"from": after_seq, "to": first})
         for e in pending:
@@ -119,7 +149,10 @@ class SseFrontend:
         self._hub = hub
         self._conv = conv_id
         self._cur_turn = ""
-        self._pending: dict[str, asyncio.Future[AskResponse]] = {}
+        # 連問題內容一起留著，不是只留一個「有人在等」的 Future。
+        # snapshot 要能把未決的提問交出去（見 pending_asks），只有 Future 是給不出
+        # 內容的——而給不出內容的下場就是提問卡片從畫面上消失、伺服器繼續空等。
+        self._pending: dict[str, tuple[AskRequest, asyncio.Future[AskResponse]]] = {}
 
     async def emit(self, ev: Event) -> None:
         """單向送事件。永不拋例外——前端的任何問題都不可以拖垮正在跑的回合。"""
@@ -134,7 +167,7 @@ class SseFrontend:
         """提問並等答案。逾時回 None，呼叫端一律 fail-closed 當作拒絕。"""
         ask_id = uuid.uuid4().hex[:12]
         fut: asyncio.Future[AskResponse] = asyncio.get_running_loop().create_future()
-        self._pending[ask_id] = fut
+        self._pending[ask_id] = (req, fut)
         await self.emit(make_event(
             self._conv, self._cur_turn, "ask.request",
             ask_id=ask_id,
@@ -166,11 +199,37 @@ class SseFrontend:
 
     def resolve(self, ask_id: str, choice_id: str, text: str | None = None) -> bool:
         """由 HTTP 端點呼叫，把答案交回等待中的 ask。回傳是否成功對上。"""
-        fut = self._pending.get(ask_id)
-        if fut is None or fut.done():
+        entry = self._pending.get(ask_id)
+        if entry is None or entry[1].done():
             return False
-        fut.set_result(AskResponse(choice_id=choice_id, text=text))
+        entry[1].set_result(AskResponse(choice_id=choice_id, text=text))
         return True
 
     def has_pending(self) -> bool:
-        return any(not f.done() for f in self._pending.values())
+        return any(not f.done() for _, f in self._pending.values())
+
+    def pending_asks(self) -> list[dict[str, Any]]:
+        """還在等答案的提問，格式對齊 `ask.request` 事件。
+
+        給 snapshot 用。提問卡片是 butler 自己造的，CC 的逐字稿裡沒有它，所以
+        App 一重建畫面（重裝、被系統回收、stream.reset）卡片就消失了——而伺服器
+        還在等，最多 timeout_sec 秒，等不到就 fail-closed 當成使用者拒絕。
+        前三個同類 bug 只是「看不到但事情照跑」，這個是「看不到，然後那件事被
+        當成你拒絕了」，使用者從頭到尾不知道它問過。
+        """
+        return [
+            {
+                "ask_id": aid,
+                "kind": req.kind,
+                "title": req.title,
+                "body": req.body,
+                "raw": req.raw,
+                "require_biometric": req.require_biometric,
+                "choices": [
+                    {"id": c.id, "label": c.label, "detail": c.detail}
+                    for c in req.choices
+                ],
+            }
+            for aid, (req, fut) in self._pending.items()
+            if not fut.done()
+        ]

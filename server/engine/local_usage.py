@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+from util import read_text_with_retry, replace_with_retry
 
 PROJECTS_DIR: Path = Path.home() / ".claude" / "projects"
 STATE_FILE: Path = config.DATA_DIR / "local_usage.json"
@@ -32,7 +33,9 @@ KEEP_DAYS = 92
 SCAN_EVERY_SEC = 60
 
 # 統計口徑版本。改了切法（新增維度、換去重規則）就加一，舊的累計值會被丟掉重掃。
-VERSION = 2
+# v3：files 開始記每個檔案的逐日貢獻，逐字稿被改寫時才扣得掉（見 scan 的說明）。
+# 這一版順便把 v2 期間被重複計數污染的累計值一起丟掉重算。
+VERSION = 3
 
 _LOCK = threading.Lock()
 _scanning = False       # 掃描是否正在進行，避免同時跑兩份
@@ -46,7 +49,7 @@ def _load() -> dict[str, Any]:
     if not STATE_FILE.exists():
         return _empty()
     try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(read_text_with_retry(STATE_FILE))
     except (OSError, json.JSONDecodeError):
         return _empty()          # 壞檔就重掃，這份資料隨時可以從逐字稿重建
     if not isinstance(data, dict) or not isinstance(data.get("days"), dict):
@@ -63,7 +66,7 @@ def _save(data: dict[str, Any]) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    replace_with_retry(tmp, STATE_FILE)
 
 
 def _bucket() -> dict[str, Any]:
@@ -73,6 +76,32 @@ def _bucket() -> dict[str, Any]:
 def _add(dst: dict[str, Any], src: dict[str, int]) -> None:
     for k in ("in", "out", "cache_read", "cache_write", "turns"):
         dst[k] = int(dst.get(k, 0)) + int(src.get(k, 0))
+
+
+def _sub(dst: dict[str, Any], src: dict[str, int]) -> None:
+    """扣掉一筆先前加過的量。夾在零以上：帳寧可少算也不要出現負數，
+    那會讓圖表的長條倒著畫，而且看不出來是哪個檔案扣過頭。"""
+    for k in ("in", "out", "cache_read", "cache_write", "turns"):
+        dst[k] = max(0, int(dst.get(k, 0)) - int(src.get(k, 0)))
+
+
+def _unapply(days: dict[str, Any], contrib: dict[str, Any],
+             project: str, kind: str) -> None:
+    """把某個檔案先前記過的量從總帳扣掉。
+
+    `contrib` 的形狀是 `{日期: {模型: 用量}}`。專案與主／子代理對整份檔案
+    是固定的，所以由呼叫端傳進來，不必存進 contrib 裡佔空間。
+    """
+    for day, by_model in contrib.items():
+        bucket = days.get(day)
+        if not isinstance(bucket, dict):
+            continue
+        for model, one in by_model.items():
+            _sub(bucket, one)
+            for dim, name in (("projects", project), ("models", model), ("kinds", kind)):
+                sub = (bucket.get(dim) or {}).get(name)
+                if isinstance(sub, dict):
+                    _sub(sub, one)
 
 
 def _local_date(ts: str) -> str:
@@ -94,17 +123,28 @@ def _scan_file(path: Path, start: int) -> tuple[list[tuple[str, str, dict]], int
 
     每筆是 (日期, 模型, 用量)。專案與主／子代理由呼叫端從路徑決定——
     那兩個對整份檔案是固定的，逐行重算沒有意義。
+
+    **一定要用二進位模式並自己累加位移。** 先前這裡是文字模式 `for line in f`
+    配 `f.tell()`，而 Python 的 TextIOWrapper 只要被 `__next__` 迭代過就會禁用
+    tell：中途 `break` 之後呼叫它一律拋
+    `OSError: telling position disabled by next() call`。
+    那個例外被下面的 `except OSError` 接住，於是整批已經讀好的資料連同位移一起
+    丟掉——也就是說**只要逐字稿的最後一行還沒寫完（CC 正在跑），這個檔案就完全
+    計不到帳**，要等它閒下來、最後一行補上換行符才補算。
+    2026-08-17 實測確認。二進位模式沒有這個限制，位移也精確。
     """
     rows: list[tuple[str, str, dict]] = []
     last_req = ""
+    pos = start
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as f:
+        with path.open("rb") as f:
             f.seek(start)
-            for line in f:
-                if not line.endswith("\n"):
-                    break            # 最後一行還沒寫完，留到下次
+            for raw in f:
+                if not raw.endswith(b"\n"):
+                    break            # 最後一行還沒寫完，留到下次（pos 不前進）
+                pos += len(raw)
                 try:
-                    d = json.loads(line)
+                    d = json.loads(raw.decode("utf-8", "replace"))
                 except json.JSONDecodeError:
                     continue
                 if d.get("type") != "assistant":
@@ -129,7 +169,7 @@ def _scan_file(path: Path, start: int) -> tuple[list[tuple[str, str, dict]], int
                     "cache_write": int(u.get("cache_creation_input_tokens") or 0),
                     "turns": 1,
                 }))
-            return rows, f.tell()
+            return rows, pos
     except OSError:
         return [], start
 
@@ -140,6 +180,12 @@ def scan() -> dict[str, Any]:
     只讀每個檔案新長出來的那一段。唯一會整份重讀的情況是檔案**變小**——
     CC 的 auto-compact 會就地改寫逐字稿，舊內容被摘要取代，這時沿用舊的
     offset 會從一個對不上的位置開始切，讀出來的是半行 JSON。
+
+    重讀前一定要先把這個檔案先前記過的量扣掉。`days` 是全域累加的桶，
+    先前只把 offset 歸零就重掃，同一段對話於是被算第二次——auto-compact 每
+    發生一次，該檔涵蓋的所有日期就再加一輪，今日與本月的 token 憑空翻倍，
+    而且錯誤永久留在 local_usage.json 裡。所以 `files[key]` 除了 offset
+    還記著這個檔案的逐日貢獻，扣得掉才敢重掃。
     """
     global _scanning
     with _LOCK:
@@ -169,10 +215,13 @@ def scan() -> dict[str, Any]:
             start = int(prev.get("offset", 0))
             if size == start:
                 continue                 # 沒長大，跳過
+            # 這個檔案先前貢獻過的量。重掃時要先還原，累加時要繼續記。
+            contrib: dict[str, Any] = prev.get("days") or {}
             if size < start:
+                _unapply(days, contrib, project, kind)
+                contrib = {}
                 start = 0                # 被改寫過，整份重來
             rows, end = _scan_file(path, start)
-            files[key] = {"offset": end}
             for day, model, one in rows:
                 bucket = days.setdefault(
                     day, {"projects": {}, "models": {}, "kinds": {}, **_bucket()},
@@ -183,9 +232,16 @@ def scan() -> dict[str, Any]:
                 _add(bucket["projects"].setdefault(project, _bucket()), one)
                 _add(bucket["models"].setdefault(model, _bucket()), one)
                 _add(bucket["kinds"].setdefault(kind, _bucket()), one)
+                _add(contrib.setdefault(day, {}).setdefault(model, _bucket()), one)
+            files[key] = {"offset": end, "days": contrib}
         for k in sorted(days)[: max(0, len(days) - KEEP_DAYS)]:
             days.pop(k, None)
-        data["scanned_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M")
+        # 存到秒。先前只存到分，而 _fresh_enough 是拿它跟 60 秒比——
+        # 掃描發生在第 59 秒時，過一秒就跨分鐘、判定過期，實際間隔在 1～60 秒之間
+        # 隨機亂跳。每次判定過期都要重跑一次全目錄 glob 加 stat，在 1.2GB 的
+        # 逐字稿上並不便宜。多存 3 個字元就換掉這個隨機性。
+        # 舊資料是分鐘精度，fromisoformat 照樣解析得動，不必轉檔。
+        data["scanned_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         data["elapsed"] = round(time.time() - started, 1)
         _save(data)
         return data

@@ -38,7 +38,7 @@ import kotlin.math.sin
 enum class PetMood { Offline, Idle, Thinking, Working, Talking, Happy, Error }
 
 /**
- * 助理的「螢幕臉」——AMAS 機體的表情部分。
+ * 桌寵的「螢幕臉」——AMAS 機體的表情部分。
  *
  * 只取機器人的臉：白色機體外框＋深色螢幕＋發光眼睛。
  *
@@ -108,18 +108,27 @@ fun PetFace(mood: PetMood, size: Dp, modifier: Modifier = Modifier) {
 
         translate(left = shakeX, top = bobY + jumpY) {
             scale(pop, pivot = center) {
+                // 報紙插畫：方角、墨線框。機體是紙色，畫在紙色背景上沒有外框
+                // 會直接隱形——深底時代白機體自己就浮得出來，現在不行了
                 drawRoundRect(
                     Palette.PetBody,
                     topLeft = Offset(6f * u, 14f * u),
                     size = Size(88f * u, 72f * u),
-                    cornerRadius = CornerRadius(16f * u),
+                    cornerRadius = CornerRadius.Zero,
                 )
-                val screen = if (mood == PetMood.Error) Color(0xFF2A1218) else Palette.PetScreen
+                drawRoundRect(
+                    Palette.PetScreen,
+                    topLeft = Offset(6f * u, 14f * u),
+                    size = Size(88f * u, 72f * u),
+                    cornerRadius = CornerRadius.Zero,
+                    style = Stroke(width = 2.5f * u),
+                )
+                val screen = if (mood == PetMood.Error) Palette.Danger else Palette.PetScreen
                 drawRoundRect(
                     screen,
                     topLeft = Offset(13f * u, 21f * u),
                     size = Size(74f * u, 58f * u),
-                    cornerRadius = CornerRadius(11f * u),
+                    cornerRadius = CornerRadius.Zero,
                 )
                 drawFace(u, mood, blink, phase, wander)
             }
@@ -133,7 +142,9 @@ private fun DrawScope.drawFace(
     val eyeY = 47f * u
     val lx = 36f * u
     val rx = 64f * u
-    val eye = Palette.Accent
+    // 紙色眼睛在墨黑螢幕上——印刷負片。朱紅只留給 Error 的螢幕，
+    // 平常就頂著紅眼睛會一直像出事了
+    val eye = Palette.PetBody
     val stroke = Stroke(width = 4.5f * u, cap = StrokeCap.Round)
 
     when (mood) {

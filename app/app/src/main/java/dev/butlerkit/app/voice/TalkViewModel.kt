@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.butlerkit.app.data.Prefs
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -62,6 +63,9 @@ class TalkViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(TalkState())
     val state: StateFlow<TalkState> = _state.asStateFlow()
 
+    /** 正在跑的語言包準備工作。換語言時要先取消它，見 [prepare]。 */
+    private var prepareJob: Job? = null
+
     init {
         val mine = prefs.talkMine.toLangOr(TalkLang.DEFAULT_MINE)
         val theirs = prefs.talkTheirs.toLangOr(TalkLang.DEFAULT_THEIRS)
@@ -91,7 +95,12 @@ class TalkViewModel(app: Application) : AndroidViewModel(app) {
         val s = _state.value
         val mine = if (forMine) lang else s.mine
         val theirs = if (forMine) s.theirs else lang
-        if (mine == theirs) return  // 兩邊同語言沒有意義，直接忽略這次選擇
+        // 兩邊同語言沒有意義。但**不能默默忽略**——原本直接 return，使用者點了
+        // 選單、選單關掉、語言沒變、畫面上什麼都沒說，看起來就是這個選項壞了。
+        if (mine == theirs) {
+            _state.update { it.copy(error = "兩邊不能選同一種語言") }
+            return
+        }
         prefs.talkMine = mine.name
         prefs.talkTheirs = theirs.name
         _state.update { it.copy(mine = mine, theirs = theirs) }
@@ -113,7 +122,11 @@ class TalkViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun prepare(mine: TalkLang, theirs: TalkLang) {
-        viewModelScope.launch { translator.prepare(mine, theirs) }
+        // 先取消上一次還沒做完的準備。在語言選單上連點幾下會疊出好幾個 prepare，
+        // 它們寫的是同一條 models flow——最後蓋上去的不保證是最新選的那組語言，
+        // 畫面顯示「可以用了」，實際準備好的卻是中途某一組，翻出來的東西不對。
+        prepareJob?.cancel()
+        prepareJob = viewModelScope.launch { translator.prepare(mine, theirs) }
     }
 
     private fun collectModels() {

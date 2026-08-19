@@ -43,11 +43,19 @@ async def abroadcast(what: str) -> None:
 
 
 def _guard(fn: Callable[[], Any]) -> Any:
-    """把 AgendaError 轉成 400。驗證訊息本來就是寫給人看的，直接透出去。"""
+    """把 AgendaError 轉成 400。驗證訊息本來就是寫給人看的，直接透出去。
+
+    ValueError／TypeError 也一起接住當最後防線：那是「型別轉不過去」，
+    本質上跟驗證失敗一樣是呼叫端給錯東西，不該回 500 讓 App 只看到「伺服器壞了」。
+    store 層該轉的都轉成 AgendaError 了，這條是保險——真有漏網的欄位，
+    使用者看到的仍是 400 而不是一則 traceback。
+    """
     try:
         return fn()
     except store.AgendaError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=f"欄位格式不對：{e}") from e
 
 
 @router.get("")
@@ -67,7 +75,9 @@ async def put_periods(
     放在 /{kind} 這幾條路由**之前**：FastAPI 依宣告順序比對，寫在後面的話
     PUT 沒事但 `POST /periods` 會被 `/{kind}` 吃掉當成新增一筆「periods」類別。
     """
-    rows = _guard(lambda: store.set_periods(payload.get("periods")))
+    rows = await asyncio.to_thread(
+        lambda: _guard(lambda: store.set_periods(payload.get("periods")))
+    )
     broadcast("periods")
     return {"periods": rows}
 
@@ -83,35 +93,38 @@ async def create(
     payload: dict = Body(...),
     _: str = Depends(require_token),
 ) -> dict:
-    if kind == "events":
-        item = _guard(lambda: store.add_event(
-            title=payload.get("title", ""), start=payload.get("start", ""),
-            end=payload.get("end"), note=payload.get("note", ""),
-            remind_min=int(payload.get("remind_min", 10)),
-        ))
-    elif kind == "alarms":
-        item = _guard(lambda: store.add_alarm(
-            time=payload.get("time", ""), label=payload.get("label", ""),
-            days=payload.get("days"), on_date=payload.get("date"),
-        ))
-    elif kind == "ledger":
-        item = _guard(lambda: store.add_entry(
-            amount=payload.get("amount", 0), category=payload.get("category", "其他"),
-            note=payload.get("note", ""), ts=payload.get("ts"),
-            income=bool(payload.get("income", False)),
-        ))
-    elif kind == "courses":
+    def _add() -> dict:
+        if kind == "events":
+            return store.add_event(
+                title=payload.get("title", ""), start=payload.get("start", ""),
+                end=payload.get("end"), note=payload.get("note", ""),
+                # 不在這裡 int()：轉型失敗要走 store 的 AgendaError 才會變成 400
+                remind_min=payload.get("remind_min", 10),
+            )
+        if kind == "alarms":
+            return store.add_alarm(
+                time=payload.get("time", ""), label=payload.get("label", ""),
+                days=payload.get("days"), on_date=payload.get("date"),
+            )
+        if kind == "ledger":
+            return store.add_entry(
+                amount=payload.get("amount", 0), category=payload.get("category", "其他"),
+                note=payload.get("note", ""), ts=payload.get("ts"),
+                income=bool(payload.get("income", False)),
+            )
         # day 與 from_period 不給預設值：缺了就讓 store 的驗證擋下來並回一句中文，
         # 自己補 0 跟 1 會讓「忘記填星期」變成安靜地排到週一。
-        item = _guard(lambda: store.add_course(
+        return store.add_course(
             name=payload.get("name", ""), day=payload.get("day"),
             from_period=payload.get("from_period"),
             to_period=payload.get("to_period"),
             teacher=payload.get("teacher", ""), room=payload.get("room", ""),
             note=payload.get("note", ""),
-        ))
-    else:
+        )
+
+    if kind not in ("events", "alarms", "ledger", "courses"):
         raise HTTPException(status_code=404, detail=f"未知的類別：{kind}")
+    item = await asyncio.to_thread(lambda: _guard(_add))
     broadcast(kind)
     return item
 
@@ -125,7 +138,9 @@ async def patch(
 ) -> dict:
     if kind not in ("events", "alarms", "ledger", "courses"):
         raise HTTPException(status_code=404, detail=f"未知的類別：{kind}")
-    row = _guard(lambda: store.update(kind, item_id, payload))  # type: ignore[arg-type]
+    row = await asyncio.to_thread(
+        lambda: _guard(lambda: store.update(kind, item_id, payload))  # type: ignore[arg-type]
+    )
     broadcast(kind)
     return row
 
@@ -138,7 +153,8 @@ async def delete(
 ) -> dict:
     if kind not in ("events", "alarms", "ledger", "courses"):
         raise HTTPException(status_code=404, detail=f"未知的類別：{kind}")
-    if not store.remove(kind, item_id):  # type: ignore[arg-type]
+    gone = await asyncio.to_thread(store.remove, kind, item_id)  # type: ignore[arg-type]
+    if not gone:
         raise HTTPException(status_code=404, detail=f"找不到：{item_id}")
     broadcast(kind)
     return {"deleted": item_id}

@@ -16,6 +16,19 @@
     <!-- 電池最佳化白名單的請求入口（Doze 會延遲甚至凍結背景連線） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- 定位：服務跑著的時候每 15 分鐘回報一次目前位置，助理也可以隨時問當下位置。
+         電腦端只保留最新一筆，不存軌跡（見 server 的 engine/location.py）。
+         COARSE 也宣告是因為使用者可以在授權對話框選「大概位置」——
+         只給區級精度仍然回答得了「附近有什麼」，不該因此整個功能不能用。
+         刻意**不要** ACCESS_BACKGROUND_LOCATION：那是給「沒有前景服務時也要在背景抓」
+         用的，需要使用者去系統設定裡手動選「一律允許」。助理的背景連線本來就掛著一個
+         前景服務，把它加上 location 型別就取得了同樣的能力，不必多要一個權限。
+         **代價是定期回報只能跑在那個服務的生命週期裡**——搬去 WorkManager 就失去
+         這個豁免，得回頭要那個權限。 -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
     <!-- 鬧鐘 -->
     <!-- USE_EXACT_ALARM 是 Android 13+ 給「核心功能就是鬧鐘」的 app 用的，安裝即生效、
          不必請使用者去設定裡開。SCHEDULE_EXACT_ALARM 則是 12/12L 的舊路。
@@ -72,7 +85,11 @@
         <service
             android:name=".notify.ButlerService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|location">
+            <!-- 這裡宣告的是「可能會用到的型別集合」，實際傳給 startForeground 的
+                 是子集，由 ButlerService 依當下有沒有定位權限決定——**沒權限時
+                 帶上 location 會拋 SecurityException 讓服務整個起不來**，
+                 那等於為了定位把推播一起弄壞。 -->
             <!-- specialUse 一定要附這個 property 說明用途，缺了它服務起不來 -->
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
@@ -113,6 +130,11 @@
             android:name=".alarm.AlarmReceiver"
             android:exported="false" />
 
+        <!-- 子通知被滑掉時重算群組摘要。只由自己設的 deleteIntent 觸發。 -->
+        <receiver
+            android:name=".notify.NotifyDismissReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".alarm.BootReceiver"
             android:exported="true"
@@ -123,5 +145,49 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- ── 桌面 widget ─────────────────────────────────────────────
+             三張各自獨立而不是一張切分頁：桌面上的東西要能單獨擺、單獨調大小，
+             使用者可能只想要課表那張。
+             課表與今日行程讀 Prefs 的 agenda 快取，用量讀 usage 快取，
+             三張都不連網——widget 只有幾秒可以出畫面，來不及等 HTTP。 -->
+        <receiver
+            android:name=".widget.CourseWidgetReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/course_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.TodayWidgetReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/today_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.UsageWidgetReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/usage_widget_info" />
+        </receiver>
+
+        <!-- 時間邊界到了就重畫（下一節課、下一個行程、跨日）。
+             沒有 intent-filter：只由自己排的 AlarmManager 叫醒，不對外開放。 -->
+        <receiver
+            android:name=".widget.WidgetTickReceiver"
+            android:exported="false" />
     </application>
 </manifest>

@@ -38,8 +38,57 @@ def test_replay() -> None:
     got, gap = h.replay_from(evs[-1].seq)
     check("已是最新 → 沒有要補的", got == [] and not gap)
 
+    # 「比第一則還早的游標」在真實世界只有一種來源：服務重啟過，手機帶著
+    # 上一世代的游標回來。先前這裡斷言「全部補回」，那正是使用者回報的
+    # 「訊息回溯」——舊事件整批重播、前端沒有去重、於是對話自己倒帶。
     got, gap = h.replay_from(evs[0].seq - 1)
-    check("從更早之前 → 全部補回", len(got) == 3)
+    check("上一世代的游標 → 一則都不補，交給 snapshot", got == [] and not gap,
+          f"got={len(got)}")
+
+
+async def test_stale_cursor_no_replay() -> None:
+    """迴歸測試：服務重啟後不可以重播上一世代的事件。
+
+    2026-08-17 使用者回報「訊息回溯」。這條盯住的是行為本身而不是實作：
+    帶舊游標連上時，收到的第一則必須是 stream.reset，且**不含任何舊事件**。
+    """
+    print("\n[重啟後不重播舊世代]")
+    h = EventHub(size=100)
+    old = [make_event("main", "t1", "text.delta", d=f"舊{i}") for i in range(5)]
+    for e in old:
+        h.publish(e)
+
+    stale = old[0].seq - 1          # 上一世代留下的游標
+    check("認得出舊世代游標", h.is_stale_cursor(stale) is True)
+    check("本世代的游標不會被誤判", h.is_stale_cursor(old[2].seq) is False)
+
+    async def collect() -> list:
+        """收 1 秒。stream 會先把該送的一次吐完，之後就掛在心跳上等，
+        所以不必真的等滿一個 SSE_KEEPALIVE_SEC。"""
+        out: list = []
+        agen = h.stream(stale)
+
+        async def pump() -> None:
+            async for ev in agen:
+                if ev is not None:
+                    out.append(ev)
+
+        try:
+            await asyncio.wait_for(pump(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            # 逾時是預期路徑（stream 吐完就掛在心跳上等），但被 wait_for 取消的
+            # async generator 不會自己收尾，留到直譯器結束才 GC 會讓整支腳本
+            # 以非零狀態退出——測試明明全過卻報失敗。
+            await agen.aclose()
+        return out
+
+    got = await collect()
+    check("第一則是 stream.reset", bool(got) and got[0].type == "stream.reset",
+          f"got={[e.type for e in got]}")
+    check("沒有任何舊事件被重播", all(e.type != "text.delta" for e in got),
+          f"共 {len(got)} 則")
 
 
 def test_gap() -> None:
@@ -203,6 +252,7 @@ async def test_emit_never_raises() -> None:
 
 async def main() -> int:
     test_replay()
+    await test_stale_cursor_no_replay()
     test_gap()
     await test_stream_live()
     await test_no_lost_wakeup()

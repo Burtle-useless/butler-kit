@@ -38,6 +38,21 @@ def save_upload(raw_name: str, data: bytes) -> Path:
     """
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = UPLOAD_DIR / f"{stamp}-{_safe_name(raw_name)}"
-    path.write_bytes(data)
+    name = _safe_name(raw_name)
+    path = UPLOAD_DIR / f"{stamp}-{name}"
+    # 時間戳只到秒，所以「同一秒的同名檔」還是會撞——手機一次多選送兩張 IMG_0001.jpg
+    # 就是這個情況，而 write_bytes 會直接覆寫，訊息裡的路徑於是指到另一張圖，
+    # 正好是上面那段 docstring 說要避免的事。撞到就加序號，不覆寫任何既有檔案。
+    # 用 x 模式建檔（已存在就拋 FileExistsError）而不是先 exists() 再寫：
+    # 兩個並行的上傳可以同時通過 exists() 檢查，這個判斷得由檔案系統做才不會有空隙。
+    n = 1
+    while True:
+        try:
+            with path.open("xb") as f:
+                f.write(data)
+            break
+        except FileExistsError:
+            n += 1
+            stem, dot, ext = name.partition(".")
+            path = UPLOAD_DIR / f"{stamp}-{stem}-{n}{dot}{ext}"
     return path.resolve()

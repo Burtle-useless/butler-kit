@@ -7,6 +7,7 @@ import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -81,6 +82,12 @@ class TalkTranslator(private val context: Context) {
             f.downloadModelIfNeeded(conditions).await()
             b.downloadModelIfNeeded(conditions).await()
             Models.Ready
+        } catch (e: CancellationException) {
+            // 取消不是失敗，而且**絕對不能寫進 _models**。換語言時上一個 prepare
+            // 會被 cancel，它在 await 恢復時拋的正是這個；被下面那個 catch 接住的話
+            // 就會把 Failed 蓋到新語言剛設好的 Downloading／Ready 上，畫面顯示
+            // 「離線語言包沒裝好」但語言包其實是好的，離線退路整條失效。
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "語言包下載失敗", e)
             Models.Failed(e.message ?: "語言包下載失敗")

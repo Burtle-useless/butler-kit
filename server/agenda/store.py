@@ -17,9 +17,11 @@ import re
 import threading
 import uuid
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import config
+from util import read_text_with_retry, replace_with_retry
 
 AGENDA_FILE = config.DATA_DIR / "agenda.json"
 
@@ -76,14 +78,50 @@ def _empty() -> dict[str, list[dict[str, Any]]]:
     return {**{k: [] for k in _KINDS}, PERIODS_KEY: [dict(p) for p in DEFAULT_PERIODS]}
 
 
+def _quarantine(path: Path, why: str) -> None:
+    """把讀不出來的檔案改名保留，不要讓它留在原位等著被覆蓋。
+
+    「回空的，下次寫入會蓋過去」曾經寫在下面當理由，但那句話的後半才是問題：
+    只要接著新增任何一筆行程，這份空結構就被整份存回去，原檔連同裡面的行程、
+    鬧鐘、記帳、課表一起消失。而壞掉的通常只是尾端幾個 byte（寫到一半斷電、
+    磁碟錯誤），前面的內容手動救得回來——前提是檔案還在。
+    """
+    try:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path.rename(path.with_name(f"{path.name}.corrupt-{stamp}"))
+        print(f"[store] {path.name} 讀取失敗（{why}），已改名保留，改用空資料啟動")
+    except OSError as e:
+        # 連改名都失敗就別再往下走了，這時候寫入只會讓情況更糟
+        print(f"[store] {path.name} 壞檔隔離失敗：{e}")
+
+
 def _load() -> dict[str, list[dict[str, Any]]]:
     if not AGENDA_FILE.exists():
         return _empty()
+    # OSError 刻意**不接**。讀不到檔案（多半是 Windows 上有人正在 replace 換檔，
+    # 見 util.read_text_with_retry）跟「檔案壞了」是兩回事，而這裡回空的代價極高：
+    # 下一次寫入就把空結構整份存回去，行程、鬧鐘、記帳、課表一起沒了。
+    # 讓它往上拋，這筆操作失敗、檔案原封不動——重試 20 次之後還讀不到，那是真的有事。
     try:
-        raw = json.loads(AGENDA_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        # 檔壞掉不能讓整個服務掛掉。回空的，下次寫入會蓋過去——
-        # 壞檔的內容本來就讀不出來，留著也救不回。
+        raw = json.loads(read_text_with_retry(AGENDA_FILE))
+    except json.JSONDecodeError:
+        # 讀得到但不是合法 JSON——這才是壞檔。先隔離再回空的：服務照常起來，
+        # 壞掉的通常只是尾端幾個 byte，前面的內容手動救得回來，前提是檔案還在。
+        _quarantine(AGENDA_FILE, "JSON 解析失敗")
+        return _empty()
+    if not isinstance(raw, dict):
+        # 解析得出來但根本不是我們的結構（例如被寫成一個陣列）。
+        # 底下的 raw.get 會直接 AttributeError，一樣當壞檔處理。
+        _quarantine(AGENDA_FILE, "根結構不是物件")
+        return _empty()
+    # 每個分類都必須是陣列。被手改成物件的話 `list()` 會安靜地得到一串 key 字串，
+    # 真正爆掉的地方在很遠的 `row["id"]`——TypeError 直接變 500，而錯誤訊息
+    # 完全指不回這個檔案。跟上面「根結構不是物件」同一類，一樣當壞檔隔離。
+    # None 仍然放行（舊檔可能整個 key 是 null），那個下面的 `or []` 接得住。
+    bad = [k for k in (*_KINDS, PERIODS_KEY)
+           if raw.get(k) is not None and not isinstance(raw[k], list)]
+    if bad:
+        _quarantine(AGENDA_FILE, f"分類欄位不是陣列：{'、'.join(bad)}")
         return _empty()
     data: dict[str, Any] = {k: list(raw.get(k) or []) for k in _KINDS}
     # 舊的 agenda.json 沒有 periods（課表是後來才加的）。補預設而不是留空：
@@ -97,7 +135,9 @@ def _save(data: dict[str, list[dict[str, Any]]]) -> None:
     AGENDA_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = AGENDA_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(AGENDA_FILE)
+    # 不用 tmp.replace：Windows 上目標檔正被別人開著讀時會拋 PermissionError
+    # （見 util.replace_with_retry 的說明）。這裡失敗就等於整筆行程沒存進去。
+    replace_with_retry(tmp, AGENDA_FILE)
 
 
 def _new_id(prefix: str) -> str:
@@ -168,6 +208,28 @@ def _need_day(v: Any) -> int:
     return n
 
 
+def _need_int(v: Any, field: str) -> int:
+    """整數欄位。**不要在呼叫端直接 `int()`**——那拋的是 ValueError，
+    而 HTTP 層的 `_guard` 與 MCP 工具的 except 都只認得 AgendaError，
+    於是 `{"remind_min": "稍後"}` 變成 500 而不是 400，助理也拿不到能自我修正的中文訊息。
+    """
+    try:
+        return int(v)
+    except (TypeError, ValueError) as e:
+        raise AgendaError(f"{field} 要是數字，收到 {v!r}") from e
+
+
+def _need_amount(v: Any) -> float:
+    """金額。正數檢查也在這裡，`update` 才不會繞過去（見 [_check_row] 的說明）。"""
+    try:
+        amt = round(float(v), 2)
+    except (TypeError, ValueError) as e:
+        raise AgendaError(f"amount 要是數字，收到 {v!r}") from e
+    if amt <= 0:
+        raise AgendaError("amount 要給正數；記收入請把 income 設為 true，不要用負數")
+    return amt
+
+
 def _need_period(v: Any, field: str) -> int:
     try:
         n = int(v)
@@ -195,7 +257,7 @@ def add_event(
         "start": _need_datetime(start, "start"),
         "end": _need_datetime(end, "end") if end else None,
         "note": str(note or "").strip()[:500],
-        "remind_min": max(0, int(remind_min)),
+        "remind_min": max(0, _need_int(remind_min, "remind_min")),
         "done": False,
     }
     with _LOCK:
@@ -260,12 +322,7 @@ def add_entry(
     income: bool = False,
 ) -> dict[str, Any]:
     """記一筆帳。amount 一律給正數，是收入就把 income 設為 true。"""
-    try:
-        amt = round(float(amount), 2)
-    except (TypeError, ValueError) as e:
-        raise AgendaError(f"amount 要是數字，收到 {amount!r}") from e
-    if amt <= 0:
-        raise AgendaError("amount 要給正數；記收入請把 income 設為 true，不要用負數")
+    amt = _need_amount(amount)
     cat = str(category or "").strip() or "其他"
     if cat not in CATEGORIES:
         raise AgendaError(f"category 只能是這幾個之一：{'、'.join(CATEGORIES)}")
@@ -347,15 +404,23 @@ def add_course(
         data["courses"].append(item)
         data["courses"].sort(key=lambda c: (c["day"], c["from_period"]))
         _save(data)
-    # 衝堂只回報不阻擋：重修、跨系選課本來就會撞，替使用者決定「這不合法」是越權。
-    # 但也不能沉默——助理重複新增同一堂課時，這是唯一看得出來的徵兆。
-    return {**item, "conflicts": conflicts_for(item)}
+        # 衝堂只回報不阻擋：重修、跨系選課本來就會撞，替使用者決定「這不合法」是越權。
+        # 但也不能沉默——助理重複新增同一堂課時，這是唯一看得出來的徵兆。
+        # 在鎖內用剛存下去的同一份算：出鎖後再讀一次不只多解析一遍整檔，
+        # 拿到的還可能是別人已經改過的新快照，回報的衝堂跟剛存的這筆對不起來。
+        hits = conflicts_for(item, data["courses"])
+    return {**item, "conflicts": hits}
 
 
-def conflicts_for(course: dict[str, Any]) -> list[dict[str, Any]]:
-    """跟這堂課在同一天、節次有重疊的其他課。"""
+def conflicts_for(
+    course: dict[str, Any], pool: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """跟這堂課在同一天、節次有重疊的其他課。
+
+    `pool` 給的話就拿它比對，不再自己讀檔（用意同 [courses_on] 的 `data`）。
+    """
     return [
-        c for c in _load()["courses"]
+        c for c in (pool if pool is not None else _load()["courses"])
         if c["id"] != course.get("id")
         and c["day"] == course["day"]
         # 兩個區間重疊的條件：各自的開始都不晚於對方的結束
@@ -364,18 +429,20 @@ def conflicts_for(course: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def courses_on(day: Any) -> list[dict[str, Any]]:
-    """某一天的課，由早到晚。day 的編號同 [_need_day]（0=週一）。"""
+def courses_on(day: Any, data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """某一天的課，由早到晚。day 的編號同 [_need_day]（0=週一）。
+
+    `data` 給的話就用它，不再自己讀檔——同一次操作要看好幾類資料時，
+    每個函式各讀一遍不只多解析幾次整檔，拿到的還可能是不同時間點的快照。
+    """
     want = _need_day(day)
-    return sorted(
-        (c for c in _load()["courses"] if c["day"] == want),
-        key=lambda c: c["from_period"],
-    )
+    rows = (data if data is not None else _load())["courses"]
+    return sorted((c for c in rows if c["day"] == want), key=lambda c: c["from_period"])
 
 
-def get_periods() -> list[dict[str, Any]]:
-    """節次時間表，依節次排好。"""
-    rows = _load()[PERIODS_KEY]
+def get_periods(data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """節次時間表，依節次排好。`data` 的用意同 [courses_on]。"""
+    rows = (data if data is not None else _load())[PERIODS_KEY]
     return sorted(rows, key=lambda p: p["no"])
 
 
@@ -403,6 +470,15 @@ def set_periods(rows: Any) -> list[dict[str, Any]]:
             raise AgendaError(f"第 {no} 節的結束時間（{end}）要晚於開始時間（{start}）")
         out.append({"no": no, "start": start, "end": end})
     out.sort(key=lambda p: p["no"])
+    # 節與節之間不可以重疊。原本只查單節自己的 end > start 與 no 沒重複，
+    # 於是「第三節 10:00-12:00、第四節 11:00-12:00」是合法的——而 now_status
+    # 靠 `next(p for p in periods if start <= now <= end)` 取**第一個**命中，
+    # 「現在第幾節」就變成看排序運氣的任意值，跨節課程的判斷跟著一起錯。
+    for prev, cur in zip(out, out[1:]):
+        if cur["start"] < prev["end"]:
+            raise AgendaError(
+                f"第 {cur['no']} 節的開始時間（{cur['start']}）早於"
+                f"第 {prev['no']} 節的結束時間（{prev['end']}），兩節重疊了")
     with _LOCK:
         data = _load()
         data[PERIODS_KEY] = out
@@ -419,8 +495,13 @@ def now_status() -> dict[str, Any]:
     now = datetime.now()
     hhmm = now.strftime("%H:%M")
     day = now.weekday()          # Python 的 weekday() 也是 0=週一，剛好同一套
-    periods = get_periods()
-    today = courses_on(day)
+    # 整份只讀一次再分給兩個查詢用。原本 get_periods 與 courses_on 各讀一遍，
+    # 「現在第幾節」與「今天有哪些課」因此可能是兩個不同時間點的快照——
+    # 中間只要有人改過課表，就會算出「第三節，但今天的課裡沒有第三節」這種
+    # 自相矛盾的結果，而這個回傳正是用來決定要不要打擾使用者的。
+    data = _load()
+    periods = get_periods(data)
+    today = courses_on(day, data)
     # 現在落在哪一節。節與節之間的下課時間不屬於任何一節，回 None。
     period = next(
         (p["no"] for p in periods if p["start"] <= hhmm <= p["end"]), None,
@@ -474,6 +555,7 @@ def update(kind: Kind, item_id: str, patch: dict[str, Any]) -> dict[str, Any]:
                 if k == "id" or k not in row:
                     continue
                 row[k] = _coerce(kind, k, v)
+            _check_row(kind, row)
             if kind == "events":
                 data["events"].sort(key=lambda e: e["start"])
             elif kind == "alarms":
@@ -483,6 +565,28 @@ def update(kind: Kind, item_id: str, patch: dict[str, Any]) -> dict[str, Any]:
             _save(data)
             return row
     raise AgendaError(f"找不到這筆：{item_id}")
+
+
+def _check_row(kind: Kind, row: dict[str, Any]) -> None:
+    """跨欄位驗證，必要時就地補齊。
+
+    `_coerce` 是逐欄位的，看不到「兩個欄位之間」的關係，而新增時是有檢查的：
+    `add_course` 擋 `to_period < from_period`。`update` 少了這一關就繞得過去，
+    而課表一旦出現 `from=5, to=1`，`conflicts_for` 與 `now_status` 的區間判斷
+    （兩邊都要求 from <= to）就永遠不成立——「他現在在上課嗎」一律答沒有，
+    助理於是在上課時間打擾他。這種錯不會報錯，只會安靜地給錯答案。
+
+    金額的正數檢查放在 `_need_amount` 裡，那是單欄位的事，這裡不重複。
+    """
+    if kind == "courses" and row["to_period"] < row["from_period"]:
+        raise AgendaError(
+            f"to_period（{row['to_period']}）不能比 from_period（{row['from_period']}）早")
+    # 一次性鬧鐘一定要有明確日期，理由與 `add_alarm` 裡那段完全相同：留 null 的話
+    # 手機端只能理解成「下一次到這個時間」，而它響完會重排，於是**天天響**。
+    # add_alarm 有補，update 沒補——把每週重複的鬧鐘改成 `days: []` 就從缺口鑽過去了，
+    # 而使用者的意思明明是「以後只響這一次」。
+    if kind == "alarms" and not row.get("days") and row.get("date") is None:
+        row["date"] = _next_date_for(row["time"])
 
 
 def _coerce(kind: Kind, field: str, v: Any) -> Any:
@@ -506,9 +610,9 @@ def _coerce(kind: Kind, field: str, v: Any) -> Any:
     if field in ("enabled", "done", "income"):
         return bool(v)
     if field == "remind_min":
-        return max(0, int(v))
+        return max(0, _need_int(v, "remind_min"))
     if field == "amount":
-        return round(float(v), 2)
+        return _need_amount(v)
     if field == "category":
         if v not in CATEGORIES:
             raise AgendaError(f"category 只能是：{'、'.join(CATEGORIES)}")

@@ -9,12 +9,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.TextStyle
 import androidx.core.content.ContextCompat
-import dev.butlerkit.app.ui.Palette
+import dev.butlerkit.app.ui.ButlerColors
+import dev.butlerkit.app.ui.SerifProbe
 
 /**
  * 面對面翻譯的獨立畫面。
@@ -43,13 +45,14 @@ class TalkActivity : ComponentActivity() {
         if (!micGranted) askMic.launch(Manifest.permission.RECORD_AUDIO)
 
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    surface = Palette.Surface,
-                    background = Palette.Bg,
-                ),
-            ) {
-                TalkScreen(micGranted = micGranted, onClose = { finish() })
+            // 跟 MainActivity 用同一份完整色盤。這裡原本只覆寫 surface 與 background
+            // 兩個欄位，其餘全是 M3 預設的淡紫——水波紋、輸入框游標與邊框、
+            // 下拉選單底色全都跟 App 其他地方不一樣，一進翻譯畫面就像換了個 App。
+            MaterialTheme(colorScheme = ButlerColors) {
+                // 預設襯線，跟 MainActivity 同一套（報紙內文）
+                ProvideTextStyle(TextStyle(fontFamily = SerifProbe.Serif)) {
+                    TalkScreen(micGranted = micGranted, onClose = { finish() })
+                }
             }
         }
     }

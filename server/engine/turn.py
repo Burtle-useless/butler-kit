@@ -12,25 +12,31 @@
 """
 from __future__ import annotations
 
+import time
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import config
 from protocol import AskChoice, AskRequest, AskResponse, Event, Frontend, make_event
 
-from . import client_pool
+from . import client_pool, diag
 from .errors import CCError, wrap
 from .fold import NO_RESPONSE, think_digest
 from .runner import TurnResult, run_turn
 from .state import ConvState, eff_model, persist
 
-# 一則使用者訊息最多容許幾輪「CC 反問→使用者回答」。
-# 有上限是因為模型偶爾會陷入反覆確認的迴圈，而使用者只想要它動手。
-MAX_ASK_ROUNDS = 3
-
 # context 用到幾成就先壓縮。0.85 是 cc-bot 實測值：再高就有機會在壓縮前先撞爆。
+# 只在拿不到權威門檻時才會用到（見 compact_threshold）。
 COMPACT_AT = 0.85
+
+# 相對於 CLI 自己的 auto-compact 門檻，我們要提前多少動手。
+# 這個係數才是實際生效的那一個。要搶在 CLI 前面的理由：CLI 是在回合**跑到一半**
+# 才就地切，工具跑完、話還沒說出口就被截斷；butler 自己壓是在回合**開始前**，
+# 使用者看到的是「我先整理一下記憶」然後正常回話。
+# 0.9 是刻意留窄的：壓太早等於白白剪掉還能用的脈絡，而 0.9×167000≈150K，
+# 距離 CLI 的門檻還有一萬七千 token 的緩衝，夠一個普通回合用。
+COMPACT_SAFETY = 0.9
 
 # 狀態列的階段旗標：壓縮期間的每則 status 都帶著它，手機端才知道這段時間
 # 它不是在回話，是在整理記憶。空值＝一般回合。
@@ -76,17 +82,36 @@ COMPACT_RECHECK_NUDGE = (
 
 
 def ctx_limit(state: ConvState) -> int:
-    """這條對話的 context 上限，決定何時觸發 auto-compact。
+    """這條對話的 context 上限。App 的用量長條拿它當分母。
 
-    先前一律回 200K，Opus 這種原生 1M 的模型會在 170K 就被壓縮一次——
-    白白剪掉八成還能用的脈絡，而且壓縮本身要花十幾秒。
+    **CLI 問到的值優先。** 底下那套靠模型名稱字串比對的判斷是猜的，而且猜錯了：
+    `claude-opus-5` 被歸進「大 context 家族」算成 1M，實測 `rawMaxTokens=200000`，
+    整整差五倍。後果不只是長條顯示的百分比是實際的 1/5，更嚴重的是主動壓縮的門檻
+    跟著算成 85 萬——那個數字永遠到不了，所以 butler 從來沒有自己壓縮過一次。
+    （2026-08-17 以 `server/_diag_ctx.py` 問 SDK 的 `get_context_usage()` 確認。）
+
+    猜測邏輯留著當開機後第一個回合的兜底：那時還沒問過 CLI，`ctx_max` 是 0。
     """
+    if state.ctx_max:
+        return state.ctx_max
     model = (eff_model(state) or "").lower()
     if model.endswith("[1m]"):          # 明確要求 1M 的後綴，優先於方案判斷
         return CTX_LIMIT_1M
     if config.ACCOUNT_PLAN in _BIG_CTX_PLANS and any(f in model for f in _BIG_CTX_FAMILIES):
         return CTX_LIMIT_1M
     return CTX_LIMIT_DEFAULT
+
+
+def compact_threshold(state: ConvState) -> int:
+    """用到多少 token 就該由 butler 主動壓縮。
+
+    有 CLI 給的 auto-compact 門檻就照它算，這是唯一能真正搶在 CLI 前面的做法：
+    即使把上限從錯誤的 1M 改回正確的 200K，`200000×0.85=170000` 仍然**晚於**
+    CLI 的 167000，主動壓縮照樣不會發生。門檻要對著門檻算，不是對著上限算。
+    """
+    if state.ctx_threshold:
+        return int(state.ctx_threshold * COMPACT_SAFETY)
+    return int(ctx_limit(state) * COMPACT_AT)
 
 
 def parse_ask(ask_data: dict) -> AskRequest | None:
@@ -153,7 +178,7 @@ class _QuietFrontend:
 
 async def _maybe_compact(state: ConvState, frontend: Frontend, conv: str) -> None:
     """context 接近上限時先壓縮，避免下一回合直接撞 CONTEXT_FULL。"""
-    if state.ctx_tokens < int(ctx_limit(state) * COMPACT_AT):
+    if state.ctx_tokens < compact_threshold(state):
         return
     turn_id = f"c-{uuid.uuid4().hex[:8]}"
     await frontend.emit(make_event(
@@ -177,38 +202,128 @@ async def _maybe_compact(state: ConvState, frontend: Frontend, conv: str) -> Non
         pass
 
 
+@dataclass
+class TurnOutcome:
+    """一則使用者訊息從頭到尾跑完的總結，只給收尾的 `turn.done` 用。
+
+    為什麼要在 `handle_turn` 這層累積，而不是直接拿最後一個 `TurnResult`：
+    空回覆重試與自動續跑會產生好幾個 `TurnResult`，「這則訊息動過工具嗎」
+    是它們的**聯集**。只看最後一輪會漏——最後那輪往往只回一句「做完了」
+    而不動任何工具，於是真正做了半小時苦工的訊息反而被判成閒聊、不推播。
+    """
+
+    used_tool: bool = False
+    """整段期間動過任何工具。閒聊不推播，靠這個分辨。"""
+
+    last_markdown: str = ""
+    """最後一則定稿的內容，當推播內文。"""
+
+    pending_ask: bool = False
+    """停在提問上收工。推播由 ask.request 負責，這裡不再補一則。"""
+
+
 async def handle_turn(text: str, state: ConvState, frontend: Frontend) -> None:
     """處理一則使用者訊息，直到產出最終回覆或明確的錯誤。"""
     conv = state.conv_id
+    out = TurnOutcome()
+    started = time.monotonic()
     try:
         await _maybe_compact(state, frontend, conv)
-        await _run_with_recovery(text, state, frontend, conv)
+        await _run_with_recovery(text, state, frontend, conv, out)
     except CCError as e:
+        # 出錯有自己的推播（error 事件 →「出狀況了」），不要再補一則「做完了」
         await _handle_error(e, state, frontend, conv)
+        return
     except Exception as e:  # noqa: BLE001 — 最外層守門，任何漏網都要變成事件而非靜默
         await _handle_error(wrap(e), state, frontend, conv)
+        return
+    await _turn_done(frontend, conv, out, started)
+
+
+async def _turn_done(
+    frontend: Frontend, conv: str, out: TurnOutcome, started: float,
+) -> None:
+    """整則訊息真的收工了。**手機端的「做完了」推播只認這一則。**
+
+    先前推播綁在 `reply.final` 上，而那個事件**每一輪都會發一次**——自動續跑
+    每續一輪一則、壓縮核對再一則。使用者收到通知點進來，助理還在跑下一輪，
+    畫面上是思考中。他的原話：「通知這個動作應該要在最後才對」。
+
+    `pending_ask` 那種收工照樣發，讓「這則訊息處理完了」這件事只有一個訊號源；
+    要不要據此推播由手機端決定（停在提問上時已經推過「助理在等你回答」了）。
+
+    耗時由伺服器算並且從 `handle_turn` 進來就起算。手機端原本自己拿 turn.start
+    當起點，續跑會重設它，量到的是**最後一輪**的長度——一件跑了十分鐘的事
+    只要最後一輪快，就會因為不到 NOTIFY_AFTER_SEC 而整個不推播。
+    """
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    await frontend.emit(make_event(
+        conv, "-", "turn.done",
+        # 值不值得吵人由伺服器判，門檻只留一份。`NOTIFY_AFTER_SEC` 先前是
+        # 零使用端的死碼，60 這個數字實際上抄在 App 裡——改伺服器的值不會有
+        # 任何效果，而那正是這種「設定看起來能調其實不能」最難查的一類。
+        notify=out.used_tool or elapsed_ms >= config.NOTIFY_AFTER_SEC * 1000,
+        # 以下三個給診斷與內文用
+        used_tool=out.used_tool,
+        # 截短是為了不讓一篇長回覆整個塞進事件流
+        markdown=out.last_markdown[:200],
+        pending_ask=out.pending_ask,
+        elapsed_ms=elapsed_ms,
+    ))
+
+
+def ask_dict(req: AskRequest) -> dict:
+    """把 AskRequest 轉成放進 `reply.final` 的 `ask` 欄位。
+
+    格式必須跟 `fold.ask_payload`（重建歷史時從原文抽的那條路）**一模一樣**，
+    否則同一則訊息在「剛送到」與「重開 App 之後」會長出不同的按鈕。
+    tests/test_ask_inline.py 釘住這件事。
+    """
+    return {
+        "title": req.title,
+        "choices": [{"id": c.id, "label": c.label, "detail": c.detail}
+                    for c in req.choices],
+    }
 
 
 async def _say(
-    frontend: Frontend, conv: str, markdown: str, pending_ask: bool = False,
+    frontend: Frontend, conv: str, markdown: str, out: TurnOutcome,
+    ask: AskRequest | None = None,
 ) -> None:
     """把一輪的回覆定稿到畫面上。
 
-    `pending_ask` 代表這則定稿後面緊接著一個 ask.request。手機端靠它判斷
-    「這回合還沒結束」——否則它會先為 reply.final 推一則「做完了」，
-    再為 ask.request 推一則「在等你回答」，兩則疊在通知欄裡，
-    而且前面那則的語意是錯的（事情正卡著等人回答，不是做完了）。
-    時序上分不出來：兩個事件相隔只有幾毫秒，得由知道答案的源頭直接講。
+    `ask` 有值代表這則話後面跟著一組選項。選項是**這則訊息的一部分**跟著送出去，
+    不是另外開一個等答案的對話框——所以它不會逾時、不會被收回，重開 App
+    也還在（重建歷史時從原文的 [[ASK:]] 標記重新抽，見 fold.ask_payload）。
+
+    先前的做法是伺服器停在 `frontend.ask()` 等答案、五分鐘沒回就放棄並把卡片
+    收掉。使用者在手機上常常隔更久才回，回來就看到選項不見了、也不知道剛才
+    被問了什麼。2026-08-19 改成現在這樣：助理問完就收工，他什麼時候點都算數。
+
+    `pending_ask` 旗標留著給通知用：手機端靠它判斷這則不是「做完了」而是
+    「在等你回答」，兩者的通知文案不一樣。
     """
-    await frontend.emit(make_event(
-        conv, "-", "reply.final", markdown=markdown, pending_ask=pending_ask,
-    ))
+    # 定稿是「助理說的話」離開伺服器的**唯一**出口，所以這裡一定要留紀錄：
+    # 有這一行而使用者看不到 → 問題在 SSE 或 App；沒有這一行 → 話根本沒送出來。
+    # 少了它，兩者在事後無從分辨（見 diag.py 的說明）。
+    diag.record("say", conv=conv, chars=len(markdown),
+                head=diag.head(markdown, 40), pending_ask=ask is not None)
+    payload: dict[str, Any] = {
+        "markdown": markdown, "pending_ask": ask is not None,
+    }
+    if ask is not None:
+        payload["ask"] = ask_dict(ask)
+    await frontend.emit(make_event(conv, "-", "reply.final", **payload))
+    # 收工推播的內文取最後一則定稿。記在這裡而不是各個呼叫點，
+    # 是因為這裡是定稿的唯一出口，漏不掉任何一條路徑。
+    out.last_markdown = markdown
 
 
 async def _run_with_recovery(
     text: str, state: ConvState, frontend: Frontend, conv: str,
+    out: TurnOutcome,
 ) -> None:
-    """跑一則訊息，含空回覆重試、反問迴路、未完成續跑。
+    """跑一則訊息，含空回覆重試、未完成續跑。
 
     **每一輪拿到回覆就立刻定稿**，不再累積到最後一次送出。
 
@@ -217,38 +332,43 @@ async def _run_with_recovery(
     使用者眼中就是「打了一大段又收回去」，而且要等所有續跑結束才重新出現。
     改成每輪各自定稿後，串流文字原地變成定稿內容，中間不再有空窗。
     """
-    prompt = text
+    res = await _run_once_with_empty_retry(text, state, frontend, conv)
+    out.used_tool = out.used_tool or res.used_tool
     said = False        # 這則訊息至少已經回過一句話（決定要不要續跑）
-    compacted = False   # 這則訊息的任何一輪被 auto-compact 切過
 
-    for ask_round in range(MAX_ASK_ROUNDS + 1):
-        res = await _run_once_with_empty_retry(prompt, state, frontend, conv)
-        compacted = compacted or res.compacted
+    # 助理想問他一件事 → 選項跟著這則回覆一起送出去，然後這個回合就結束。
+    # 這裡刻意**不等答案**：他在手機上，可能十分鐘後才看到、也可能改成自己打字
+    # 回答。伺服器空等只有兩種下場——逾時把卡片收掉（他回來就看不到剛才被問
+    # 什麼），或是一路占著一個回合。他點選項時就是送一則普通訊息，走新的回合。
+    ask_req = parse_ask(res.ask) if res.ask else None
+    out.pending_ask = ask_req is not None
 
-        # CC 想問使用者一件事 → 直接在這個回合裡問完，不必等使用者另外發訊息。
-        # 這段刻意排在定稿之前：定稿要帶上「後面還有問題」，見 _say 的說明。
-        ask_req = parse_ask(res.ask) if res.ask else None
-        will_ask = ask_req is not None and ask_round < MAX_ASK_ROUNDS
+    if res.reply and res.reply != NO_RESPONSE:
+        # 問題前的說明也走這裡：使用者得先看到「在問什麼」才看得懂選項
+        await _say(frontend, conv, res.reply, out, ask=ask_req)
+        said = True
+    elif ask_req is not None:
+        # 只打了標記、正文空白。規則要求選項也要寫進正文，但真的沒寫時
+        # 至少要有題目可看，否則畫面上會是幾顆沒頭沒尾的按鈕。
+        await _say(frontend, conv, ask_req.title, out, ask=ask_req)
+        said = True
 
-        if res.reply and res.reply != NO_RESPONSE:
-            # 問題前的說明也走這裡：使用者得先看到「在問什麼」才看得懂選項
-            await _say(frontend, conv, res.reply, pending_ask=will_ask)
-            said = True
-
-        if will_ask:
-            answer = await frontend.ask(ask_req)
-            if answer is None:
-                await _say(frontend, conv,
-                           "（我等你回覆等到逾時了，先擱著。需要的話再跟我說。）")
-                return
-            prompt = answer.text or answer.choice_id
-            continue
-
-        if compacted:
-            res = await _recheck_after_compact(state, frontend, conv)
-            said = said or bool(res.reply and res.reply != NO_RESPONSE)
-        await _auto_continue(said, res, state, frontend, conv)
+    if ask_req is not None:
+        # 等他回答，不續跑。壓縮核對也一起跳過：那一輪的用途是確認「工作做到
+        # 一半被壓縮切斷」，而停下來問問題本來就沒有未完成的動作要接。
         return
+
+    if res.compacted:
+        # 核對輪多半只回一句話、不動工具，直接拿它的 res 去判續跑會把
+        # 「原本那輪動過工具卻沒收尾」的事實抹掉——被壓縮切斷的回合正是
+        # 最需要續跑的一種，卻剛好因為插了這一輪而永遠不會續跑。
+        # 只把 used_tool 併回來：done／wait 要以核對輪為準（它說做完了就是做完了）。
+        used_before = res.used_tool
+        res = await _recheck_after_compact(state, frontend, conv, out)
+        res.used_tool = res.used_tool or used_before
+        said = said or bool(res.reply and res.reply != NO_RESPONSE)
+        out.used_tool = out.used_tool or res.used_tool
+    await _auto_continue(said, res, state, frontend, conv, out)
 
 
 async def _run_once_with_empty_retry(
@@ -300,7 +420,7 @@ async def _run_once_with_empty_retry(
 
 
 async def _recheck_after_compact(
-    state: ConvState, frontend: Frontend, conv: str,
+    state: ConvState, frontend: Frontend, conv: str, out: TurnOutcome,
 ) -> TurnResult:
     """壓縮把一則訊息的處理過程切成兩半之後，回頭核對有沒有做了卻沒說的事。
 
@@ -316,13 +436,13 @@ async def _recheck_after_compact(
     res = await run_turn(COMPACT_RECHECK_NUDGE, state, frontend, turn_id)
     _persist_sid(res, state)
     if res.reply and res.reply != NO_RESPONSE:
-        await _say(frontend, conv, res.reply)
+        await _say(frontend, conv, res.reply, out)
     return res
 
 
 async def _auto_continue(
     said: bool, res: TurnResult, state: ConvState,
-    frontend: Frontend, conv: str,
+    frontend: Frontend, conv: str, out: TurnOutcome,
 ) -> None:
     """未完成自動續跑。
 
@@ -344,8 +464,15 @@ async def _auto_continue(
         turn_id = f"k-{uuid.uuid4().hex[:8]}"
         res = await run_turn(CONTINUE_NUDGE, state, frontend, turn_id)
         _persist_sid(res, state)
+        out.used_tool = out.used_tool or res.used_tool
+        # 續跑輪也可能問問題（補跑時才發現卡住了）。上面的 while 條件本來就會
+        # 因為 res.ask 而停下，但那則回覆的選項先前**整個被丟掉**——只帶正文
+        # 走 _say，使用者看到一句「要選 A 還是 B」卻沒有任何按鈕可按。
+        # 順手一起帶出去，格式與第一輪完全相同。
+        ask_req = parse_ask(res.ask) if res.ask else None
+        out.pending_ask = out.pending_ask or ask_req is not None
         if res.reply and res.reply != NO_RESPONSE:
-            await _say(frontend, conv, res.reply)
+            await _say(frontend, conv, res.reply, out, ask=ask_req)
 
 
 def _persist_sid(res: TurnResult, state: ConvState) -> None:

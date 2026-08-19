@@ -25,12 +25,18 @@ class ConvState:
     conv_id: str                              # 對話 id
     cwd: Path                                 # 工作目錄
     session_id: str | None = None             # CC session id（None＝尚未開始）
+    # 這條對話是接管來的話，記下原始那個 session 的 id。接管接的是複印本
+    # （見 sessions.fork_session），只比對 session_id 的話原始那筆會重新出現在
+    # 「電腦上的 session」清單裡，看起來像沒接管成功。
+    forked_from: str | None = None
     model: str | None = None                  # 對話覆寫模型（None＝跟隨帳號預設）
     effort: str | None = None                 # 對話覆寫思考程度（None＝跟隨帳號預設）
     wt: dict | None = None                    # worktree 資訊（path/branch/base/repo/prev_cwd）
     ctx_tokens: int = 0                       # 最近一次 result 回報的 context 用量
-    pending_options: list[str] | None = None  # 待答選項
-    _session_label: str | None = None         # 顯示用標題快取
+    # 下面兩個是每回合結束時向 SDK 問來的權威值（見 runner 的 get_context_usage）。
+    # 不進持久化：它們是模型屬性、每回合都會重問，重啟後第一回合前先用估算頂著。
+    ctx_max: int = 0                          # 這條對話真正的 context 上限（0＝還沒問到）
+    ctx_threshold: int = 0                    # CLI 自己會啟動 auto-compact 的門檻
     _no_think: bool = False                   # 本次是否關閉思考（空回覆重試逃生門）
 
 
@@ -87,6 +93,7 @@ def persist(state: ConvState) -> None:
         data = _load_map()
         data[state.conv_id] = {
             "session_id": state.session_id,
+            "forked_from": state.forked_from,
             "model": state.model,
             "effort": state.effort,
             "cwd": str(state.cwd or config.DEFAULT_CWD),
@@ -118,6 +125,7 @@ def get_state(conv_id: str) -> ConvState:
         conv_id=conv_id,
         cwd=cwd,
         session_id=rec.get("session_id"),
+        forked_from=rec.get("forked_from"),
         model=rec.get("model"),
         effort=rec.get("effort"),
         wt=wt,

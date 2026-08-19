@@ -153,8 +153,14 @@ async def test_done_stops() -> None:
     check("純聊天沒動工具就不補跑", len(s3.prompts) == 1, f"{len(s3.prompts)} 次")
 
 
-async def test_ask_loop() -> None:
-    print("\n[反問迴路]")
+async def test_ask_inline() -> None:
+    """提問不阻塞：選項跟著訊息送出去，回合就結束。
+
+    舊版是伺服器停在 frontend.ask() 等答案、五分鐘沒回就把卡片收掉。使用者在
+    手機上常常隔更久才回，回來只看到選項不見了、也不知道剛才被問了什麼。
+    2026-08-19 改成選項是訊息的一部分，他什麼時候點都算數。
+    """
+    print("\n[提問不阻塞]")
     ask_data = {"questions": [{
         "question": "要刪哪一個？",
         "options": [{"label": "A 檔", "description": "舊的"},
@@ -162,24 +168,41 @@ async def test_ask_loop() -> None:
     }]}
     s = Scripted([
         TurnResult(reply="我找到兩個檔案", ask=ask_data, used_tool=True),
-        TurnResult(reply="已刪除 A 檔", used_tool=True, done=True),
+        TurnResult(reply="不該跑到這一輪", used_tool=True, done=True),
     ])
     install(s)
-    fe = FakeFrontend(answers=[AskResponse(choice_id="A 檔")])
+    fe = FakeFrontend()
     await turn_mod.handle_turn("清掉舊檔", make_state(), fe)
-    check("有向使用者提問", len(fe.asks) == 1)
-    check("選項正確帶過去", len(fe.asks[0].choices) == 2 if fe.asks else False,
-          str([c.label for c in fe.asks[0].choices]) if fe.asks else "")
-    check("答案當成下一輪輸入", s.prompts[1] == "A 檔" if len(s.prompts) > 1 else False,
-          str(s.prompts))
-    check("問題前的說明有先送出", "我找到兩個檔案" in " ".join(fe.replies()),
+    check("沒有停下來等答案", not fe.asks, str(fe.asks))
+    check("問完就收工不續跑", len(s.prompts) == 1, str(s.prompts))
+    check("問題前的說明有送出", "我找到兩個檔案" in " ".join(fe.replies()),
           str(fe.replies()))
-    # 手機端靠這個旗標決定要不要推「做完了」。沒有它的話，提問那一輪會同時
-    # 收到 reply.final 與 ask.request，通知欄疊出兩則，前一則還說事情做完了。
+
     finals = [e for e in fe.events if e.type == "reply.final"]
-    flags = [e.data.get("pending_ask") for e in finals]
-    check("提問前的定稿標了 pending_ask", flags[:1] == [True], str(flags))
-    check("答完之後的定稿沒有標", all(f is False for f in flags[1:]), str(flags))
+    check("只定稿一則", len(finals) == 1, str(len(finals)))
+    ask = finals[0].data.get("ask") if finals else None
+    check("選項附在定稿上", isinstance(ask, dict), str(ask))
+    check("題目帶對", ask and ask.get("title") == "要刪哪一個？", str(ask))
+    check("選項帶對",
+          ask and [c["label"] for c in ask["choices"]] == ["A 檔", "B 檔"], str(ask))
+    # 手機端靠這個旗標決定通知要寫「做完了」還是「在等你回答」
+    check("標了 pending_ask", finals[0].data.get("pending_ask") is True)
+
+
+async def test_ask_only_marker() -> None:
+    """只打標記沒寫正文時，至少要有題目可看，不能是幾顆沒頭沒尾的按鈕。"""
+    print("\n[只有標記沒有正文]")
+    ask_data = {"questions": [{
+        "question": "要哪個？",
+        "options": [{"label": "甲", "description": ""},
+                    {"label": "乙", "description": ""}],
+    }]}
+    install(Scripted([TurnResult(reply=NO_RESPONSE, ask=ask_data, used_tool=True)]))
+    fe = FakeFrontend()
+    await turn_mod.handle_turn("x", make_state(), fe)
+    check("拿題目當正文", fe.replies() == ["要哪個？"], str(fe.replies()))
+    finals = [e for e in fe.events if e.type == "reply.final"]
+    check("選項還是附上去了", bool(finals and finals[0].data.get("ask")))
 
 
 async def test_ask_marker() -> None:
@@ -213,26 +236,20 @@ async def test_ask_marker() -> None:
 
     s = Scripted([
         TurnResult(reply="我需要你決定一下", ask=parsed, used_tool=True),
-        TurnResult(reply="好，照你說的做完了", used_tool=True, done=True),
+        TurnResult(reply="不該跑到這一輪", used_tool=True, done=True),
     ])
     install(s)
-    fe = FakeFrontend(answers=[AskResponse(choice_id="只補那一段")])
+    fe = FakeFrontend()
     await turn_mod.handle_turn("改一下", make_state(), fe)
-    check("手機上真的跳了問題", len(fe.asks) == 1)
-    check("點選的選項變成下一輪輸入",
-          s.prompts[1] == "只補那一段" if len(s.prompts) > 1 else False, str(s.prompts))
+    finals = [e for e in fe.events if e.type == "reply.final"]
+    check("選項送到手機上", bool(finals and finals[0].data.get("ask")))
 
-
-async def test_ask_timeout() -> None:
-    print("\n[反問逾時]")
-    ask_data = {"question": "要哪個？",
-                "options": [{"label": "甲", "description": ""}]}
-    s = Scripted([TurnResult(reply="請選", ask=ask_data, used_tool=True)])
-    install(s)
-    fe = FakeFrontend(answers=[None])   # 逾時
-    await turn_mod.handle_turn("x", make_state(), fe)
-    check("逾時不會卡死，有給使用者交代", any("逾時" in r for r in fe.replies()),
-          str(fe.replies()))
+    # 現場（turn.ask_dict）與重建歷史（fold.ask_payload）是兩條不同的路，
+    # 產出的格式一個字都不能差——差了的話同一則訊息在「剛送到」與「重開 App
+    # 之後」會長出不同的按鈕，而這種不一致很難從症狀查回原因。
+    live = turn_mod.ask_dict(req) if req else None
+    check("兩條路產出同一份選項", live == fold_mod.ask_payload(raw),
+          f"{live} vs {fold_mod.ask_payload(raw)}")
 
 
 async def test_error_recovery() -> None:
@@ -323,6 +340,43 @@ async def test_ctx_limit_by_model() -> None:
     check("[1m] 後綴強制 1M", turn_mod.ctx_limit(st) == turn_mod.CTX_LIMIT_1M)
 
 
+async def test_ctx_authoritative_wins() -> None:
+    """CLI 問到的權威值要蓋過模型名稱的猜測。
+
+    這條盯住 2026-08-17 找到的失憶根因：`claude-opus-5` 被猜成 1M，實際是 200K，
+    主動壓縮門檻算成 85 萬所以永遠不觸發。**而且光把上限改對還不夠**——
+    200000×0.85=170000 仍然晚於 CLI 的 167000，門檻必須對著 CLI 的門檻算。
+    """
+    print("\n[context 權威值優先]")
+    st = make_state()
+    st.model = "claude-opus-5"
+    # 方案是設定值不是預設值，測試自己設（理由同上一個測試）
+    saved = config.ACCOUNT_PLAN
+    try:
+        config.ACCOUNT_PLAN = "max"
+        check("還沒問到時退回猜測", turn_mod.ctx_limit(st) == turn_mod.CTX_LIMIT_1M)
+    finally:
+        config.ACCOUNT_PLAN = saved
+
+    st.ctx_max = 200_000
+    st.ctx_threshold = 167_000
+    check("問到之後以權威值為準", turn_mod.ctx_limit(st) == 200_000)
+
+    thr = turn_mod.compact_threshold(st)
+    check("門檻搶在 CLI 之前", thr < 167_000, f"門檻={thr}")
+    check("但不會壓得太早", thr > 140_000, f"門檻={thr}")
+
+    # 這才是重點：拿上限乘 COMPACT_AT 算出來的門檻反而比 CLI 晚，等於沒用
+    naive = int(200_000 * turn_mod.COMPACT_AT)
+    check("對照組（拿上限算）確實晚於 CLI", naive > 167_000, f"naive={naive}")
+
+    st2 = make_state()
+    st2.model = "claude-opus-5"
+    check("沒有權威值時仍照舊估算",
+          turn_mod.compact_threshold(st2)
+          == int(turn_mod.ctx_limit(st2) * turn_mod.COMPACT_AT))
+
+
 async def test_compact_is_silent() -> None:
     """壓縮那一輪的產物是維運資料，不是助理說的話，一個字都不該進畫面。
 
@@ -393,20 +447,21 @@ async def test_recheck_after_compact() -> None:
     await turn_mod.handle_turn("x", make_state(), FakeFrontend())
     check("沒壓縮就不多跑", len(s2.prompts) == 1, f"{len(s2.prompts)} 次")
 
-    # 旗標要跨輪累積：壓縮發生在反問之前，答完之後照樣得核對，
-    # 否則「壓縮 → 提問 → 回答」這條最常見的路徑剛好整條漏掉。
-    ask_data = {"question": "要哪個？", "options": [{"label": "甲", "description": ""}]}
+    # 提問那一輪就算被壓縮切過也不核對：核對的用途是「工作做到一半被切斷」，
+    # 而停下來問問題本來就沒有未完成的動作要接。使用者答完會開新回合，
+    # 屆時 context 已經是壓縮後的乾淨狀態。
+    ask_data = {"question": "要哪個？",
+                "options": [{"label": "甲", "description": ""},
+                            {"label": "乙", "description": ""}]}
     s3 = Scripted([
         TurnResult(reply="要你選一下", ask=ask_data, used_tool=True, compacted=True),
-        TurnResult(reply="照做了", used_tool=True, done=True),
-        TurnResult(reply="沒有漏掉的", done=True),
+        TurnResult(reply="不該跑到這一輪", used_tool=True, done=True),
     ])
     install(s3)
-    fe3 = FakeFrontend(answers=[AskResponse(choice_id="甲")])
+    fe3 = FakeFrontend()
     await turn_mod.handle_turn("x", make_state(), fe3)
-    check("壓縮在反問之前也記得核對",
-          len(s3.prompts) == 3 and s3.prompts[2] == turn_mod.COMPACT_RECHECK_NUDGE,
-          str(len(s3.prompts)))
+    check("提問時不補跑核對輪", len(s3.prompts) == 1, str(len(s3.prompts)))
+    check("沒有停下來等答案", not fe3.asks)
 
     # 空回覆重試會換掉整個 TurnResult，旗標若跟著被覆寫就等於沒偵測到
     s4 = Scripted([
@@ -421,19 +476,123 @@ async def test_recheck_after_compact() -> None:
           str(len(s4.prompts)))
 
 
+async def test_turn_done_timing() -> None:
+    """收工通知只在整則訊息真的做完時發一次。
+
+    災情：使用者收到「做完了」的推播，點進來助理還在思考。原因是推播綁在
+    `reply.final` 上，而那個事件**每一輪都會發**——自動續跑每續一輪一則、
+    壓縮核對再一則。他的原話：「通知這個動作應該要在最後才對」。
+    """
+    print("\n[收工通知的時機]")
+    s = Scripted([
+        TurnResult(reply="我先讀了檔案", used_tool=True),
+        TurnResult(reply="接著改完了", used_tool=False, done=True),
+    ])
+    install(s)
+    fe = FakeFrontend()
+    await turn_mod.handle_turn("做事", make_state(), fe)
+    dones = [e for e in fe.events if e.type == "turn.done"]
+    last_final = max(i for i, e in enumerate(fe.events) if e.type == "reply.final")
+    check("兩則定稿只換來一則收工通知", len(fe.replies()) == 2 and len(dones) == 1,
+          f"定稿 {len(fe.replies())} 則、收工 {len(dones)} 則")
+    check("收工通知排在最後一則定稿之後",
+          bool(dones) and fe.events.index(dones[0]) > last_final)
+    # 最後一輪往往只回一句「做完了」不動工具。只看它就會把跑了半小時的
+    # 苦工判成閒聊而不推播，所以要取所有輪次的聯集。
+    check("動過工具是聯集，不是只看最後一輪",
+          bool(dones) and dones[0].data.get("used_tool") is True,
+          str(dones[0].data) if dones else "")
+    check("內文取最後一則定稿",
+          bool(dones) and dones[0].data.get("markdown") == "接著改完了")
+    check("耗時由伺服器算（手機端拿 turn.start 只量得到最後一輪）",
+          bool(dones) and isinstance(dones[0].data.get("elapsed_ms"), int))
+    check("動過工具就值得推播", bool(dones) and dones[0].data.get("notify") is True)
+
+    # 隨口聊兩句也推播會很煩。門檻只有伺服器這一份（config.NOTIFY_AFTER_SEC），
+    # 先前這個常數零使用端，60 是抄在 App 裡的
+    install(Scripted([TurnResult(reply="嗨", used_tool=False, done=True)]))
+    fe_chat = FakeFrontend()
+    await turn_mod.handle_turn("嗨", make_state(), fe_chat)
+    chat_done = [e for e in fe_chat.events if e.type == "turn.done"]
+    check("沒動工具的短回合不推播",
+          bool(chat_done) and chat_done[0].data.get("notify") is False,
+          str(chat_done[0].data) if chat_done else "")
+
+    # 停在提問上：手機端靠這個旗標避開「做完了」，那件事還沒做完
+    ask_data = {"questions": [{
+        "question": "要刪哪一個？",
+        "options": [{"label": "甲", "description": ""}],
+    }]}
+    install(Scripted([TurnResult(reply="要刪哪個？", ask=ask_data, used_tool=True)]))
+    fe2 = FakeFrontend()
+    await turn_mod.handle_turn("x", make_state(), fe2)
+    dones2 = [e for e in fe2.events if e.type == "turn.done"]
+    check("提問收工照樣有通知事件（只有一個收工訊號源）", len(dones2) == 1)
+    check("但標了 pending_ask",
+          bool(dones2) and dones2[0].data.get("pending_ask") is True)
+
+    # 出錯有自己的推播（error →「出狀況了」），再補一則「做完了」是錯的
+    install(Scripted([]))
+    turn_mod.run_turn = _boom                # type: ignore[assignment]
+    fe3 = FakeFrontend()
+    await turn_mod.handle_turn("x", make_state(), fe3)
+    check("出錯不發收工通知",
+          not [e for e in fe3.events if e.type == "turn.done"])
+    check("但有發錯誤事件", bool(fe3.errors()))
+
+
+async def test_continue_round_ask() -> None:
+    """續跑輪問問題時，選項也要送出去。
+
+    先前只有第一輪的 ask 會被帶上，續跑輪的**整個被丟掉**——使用者看到一句
+    「要選 A 還是 B」卻沒有任何按鈕可按，那件事就卡在那裡。
+    """
+    print("\n[續跑輪也會問]")
+    ask_data = {"questions": [{
+        "question": "要用哪個做法？",
+        "options": [{"label": "重寫", "description": ""},
+                    {"label": "只補", "description": ""}],
+    }]}
+    s = Scripted([
+        TurnResult(reply="我讀完了", used_tool=True),
+        TurnResult(reply="卡住了，你決定", ask=ask_data, used_tool=True),
+    ])
+    install(s)
+    fe = FakeFrontend()
+    await turn_mod.handle_turn("做事", make_state(), fe)
+    finals = [e for e in fe.events if e.type == "reply.final"]
+    check("續跑了一輪", len(s.prompts) == 2, str(len(s.prompts)))
+    check("兩則都定稿了", len(finals) == 2, str(len(finals)))
+    ask = finals[-1].data.get("ask") if finals else None
+    check("續跑輪的選項有送出去", isinstance(ask, dict), str(ask))
+    check("題目與選項都對",
+          bool(ask) and ask.get("title") == "要用哪個做法？"
+          and [c["label"] for c in ask["choices"]] == ["重寫", "只補"], str(ask))
+    dones = [e for e in fe.events if e.type == "turn.done"]
+    check("收工通知標了 pending_ask",
+          bool(dones) and dones[0].data.get("pending_ask") is True)
+
+
+async def _boom(prompt, state, frontend, turn_id, expect_assistant=True):
+    raise CCError(kind="AUTH", user_msg="登入憑證失效了。", raw="401")
+
+
 async def main() -> int:
     await test_normal()
     await test_empty_three_layers()
     await test_auto_continue()
     await test_done_stops()
-    await test_ask_loop()
+    await test_ask_inline()
+    await test_ask_only_marker()
     await test_ask_marker()
-    await test_ask_timeout()
     await test_error_recovery()
     await test_compact()
     await test_ctx_limit_by_model()
+    await test_ctx_authoritative_wins()
     await test_compact_is_silent()
     await test_recheck_after_compact()
+    await test_turn_done_timing()
+    await test_continue_round_ask()
     print(f"\n{'=' * 50}")
     if FAILED:
         print(f"FAILED {len(FAILED)}: {FAILED}")

@@ -2,9 +2,9 @@
 <resources>
     <!-- 與 Theme.kt 的 Palette.Bg 對齊。啟動畫面若跟 App 內色溫不同，
          進 App 會有一瞬間的斷層。
-         （上一版這裡留著暖灰 #1C1A18，是暖色系時期的遺留，方向剛好相反。） -->
-    <color name="bg">#0B0F17</color>
-    <!-- 圖示底色刻意比 Bg 亮一階（等同 Palette.Surface），
-         全黑底在深色桌布上會整個糊掉，機體白框需要一點對比才浮得起來。 -->
-    <color name="ic_launcher_bg">#121826</color>
+         （2026-08-19 換報紙版：紙白。上一版是深藍黑 #0B0F17。） -->
+    <color name="bg">#F4F2EC</color>
+    <!-- 圖示底色＝紙面（Palette.Surface）。報紙桌寵自帶墨線框，
+         不需要靠底色做對比。 -->
+    <color name="ic_launcher_bg">#FBFAF5</color>
 </resources>

@@ -26,6 +26,14 @@ ENDPOINT = "https://api.anthropic.com/api/oauth/usage"
 # 額度不會秒變，而且這是每次打開設定頁都會呼叫的端點——快取一分鐘，
 # 免得盯著畫面的人替他自己刷出一堆對外請求。
 CACHE_SEC = 60
+
+# 失敗也要快取。原本拿不到就直接回空陣列、不留任何紀錄，於是斷網的時候
+# 每一次刷新設定頁都重新發一個 timeout=10 的對外請求：畫面要等十秒才承認
+# 這塊沒東西，而那十秒佔著 to_thread 的執行緒，連按幾下就把池子塞住，
+# 其他要用執行緒的工作（行事曆讀寫、用量掃描）一起卡在後面排隊。
+# TTL 比成功時短很多：網路回來的時候不該讓人再等滿一分鐘才看得到額度。
+FAIL_CACHE_SEC = 20
+
 _cache: dict[str, Any] = {}
 
 # 顯示順序與中文標題。key 是官方回應的欄位名，沒出現的就跳過
@@ -67,12 +75,17 @@ def limits() -> list[dict]:
     now = time.time()
     if "data" in _cache and now - _cache.get("ts", 0) < CACHE_SEC:
         data = _cache["data"]
+    elif now - _cache.get("fail_ts", 0) < FAIL_CACHE_SEC:
+        # 剛剛才失敗過，這次直接放棄，不要再去等一輪 timeout
+        return []
     else:
         data = _fetch()
         if data is None:
+            _cache["fail_ts"] = now
             return []
         _cache["data"] = data
         _cache["ts"] = now
+        _cache.pop("fail_ts", None)
 
     out: list[dict] = []
     for key, label in BUCKETS:

@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 只影響啟動畫面與系統列；畫面本身的配色由 Compose 的 MaterialTheme 負責 -->
-    <style name="Theme.Butler" parent="android:Theme.Material.NoActionBar">
+    <!-- 只影響啟動畫面與系統列；畫面本身的配色由 Compose 的 MaterialTheme 負責。
+
+         parent 一定要是 Light：Android 12+ 的啟動畫面底色預設取 theme 的
+         colorBackground，深色 parent 會讓冷啟動先閃一幕黑、進到紙白的 App
+         再跳一次——就是「載入頁面沒改到」的成因。
+         windowLightStatusBar 讓紙白底上的時鐘與圖示轉深色，不宣告的話
+         冷啟動那幾幀是白字配紙白底，等於看不見。 -->
+    <style name="Theme.Butler" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">@color/bg</item>
         <item name="android:navigationBarColor">@color/bg</item>
         <item name="android:windowBackground">@color/bg</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

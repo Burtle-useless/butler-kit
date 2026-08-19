@@ -13,11 +13,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import outbox                       # noqa: E402
+from engine import local_usage      # noqa: E402
 from engine import usage            # noqa: E402
 
 TMP = Path(tempfile.mkdtemp())
 usage.USAGE_FILE = TMP / "usage.json"
 outbox.OUTBOX_FILE = TMP / "outbox.json"
+local_usage.PROJECTS_DIR = TMP / "projects"
+local_usage.STATE_FILE = TMP / "local_usage.json"
 
 from fastapi.testclient import TestClient          # noqa: E402
 from transport.app import app                      # noqa: E402
@@ -75,6 +78,79 @@ def test_usage_robust() -> None:
     r = client.get("/v1/usage?span=3")
     check("端點回得來", r.status_code == 200, str(r.status_code))
     check("span 有生效", len(r.json()["days"]) == 3)
+
+
+def _cc_line(req: str, tokens: int) -> str:
+    """一行逐字稿裡的 assistant 紀錄。時間用現在，免得被 KEEP_DAYS 裁掉。"""
+    import json
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return json.dumps({
+        "type": "assistant", "requestId": req, "timestamp": ts,
+        "message": {"model": "claude-opus-5",
+                    "usage": {"input_tokens": tokens, "output_tokens": 0}},
+    }, ensure_ascii=False)
+
+
+def _total_in(data: dict) -> int:
+    return sum(int(d.get("in", 0)) for d in data["days"].values())
+
+
+def test_local_usage_partial_line() -> None:
+    """正在被寫入的逐字稿，前面寫完的部分要算得到。
+
+    先前 `_scan_file` 是文字模式 `for line in f` 配 `f.tell()`，而 TextIOWrapper
+    被迭代過就禁用 tell，中途 break 呼叫它一律拋
+    `OSError: telling position disabled by next() call`——例外被 except OSError
+    接住，整批已讀資料連同位移一起丟掉。也就是說**只要 CC 還在跑，那個 session
+    的用量就完全計不到**，要等它閒下來才補算。
+    """
+    print("\n[本機用量：寫到一半的逐字稿]")
+    proj = local_usage.PROJECTS_DIR / "專案A"
+    proj.mkdir(parents=True, exist_ok=True)
+    jf = proj / "s1.jsonl"
+    # 三行寫完 + 第四行還在寫（沒有換行符）
+    done = "\n".join(_cc_line(f"r{i}", 100) for i in range(3)) + "\n"
+    # newline="" 是必要的：Windows 上 write_text 預設會把 \n 換成 \r\n，
+    # 位移就對不上了。真實的 CC 逐字稿是 \n。
+    jf.write_text(done + _cc_line("r3", 100), encoding="utf-8", newline="")
+
+    data = local_usage.scan()
+    check("寫完的三行有算到", _total_in(data) == 300, f"實際 {_total_in(data)}")
+    off = data["files"]["專案A/s1.jsonl"]["offset"]
+    check("位移停在最後一個完整行", off == len(done.encode()), f"off={off}")
+
+    # CC 把那行寫完，又多寫一行
+    jf.write_text(done + _cc_line("r3", 100) + "\n" + _cc_line("r4", 100) + "\n",
+                  encoding="utf-8", newline="")
+    data = local_usage.scan()
+    check("補寫的兩行接著算", _total_in(data) == 500, f"實際 {_total_in(data)}")
+
+
+def test_local_usage_rewrite_no_double_count() -> None:
+    """逐字稿被 auto-compact 就地改寫後不可以重複計數。
+
+    CC 壓縮時會把舊內容換成摘要，檔案因此變小。先前的處理是把位移歸零重掃，
+    但 days 是全域累加的桶、沒有記錄各檔已計入多少，於是同一段對話被算第二次——
+    每壓縮一次，該檔涵蓋的所有日期就再加一輪，而且永久留在 local_usage.json 裡。
+    """
+    print("\n[本機用量：逐字稿被改寫]")
+    proj = local_usage.PROJECTS_DIR / "專案B"
+    proj.mkdir(parents=True, exist_ok=True)
+    jf = proj / "s2.jsonl"
+    jf.write_text("\n".join(_cc_line(f"b{i}", 1000) for i in range(5)) + "\n",
+                  encoding="utf-8", newline="")
+    before = _total_in(local_usage.scan())
+    check("五筆先算進來", before >= 5000, f"實際 {before}")
+
+    # 壓縮：檔案變小，內容換成兩筆新的
+    jf.write_text("\n".join(_cc_line(f"c{i}", 1000) for i in range(2)) + "\n",
+                  encoding="utf-8", newline="")
+    after = _total_in(local_usage.scan())
+    # 舊的 5000 要被扣掉、換成新的 2000，其他檔案的量不受影響
+    check("舊的貢獻被扣掉而不是疊加", after == before - 5000 + 2000,
+          f"{before} -> {after}")
+    check("沒有變成負數", after >= 0, f"實際 {after}")
 
 
 def test_outbox_validation() -> None:
@@ -141,15 +217,20 @@ def test_send_file_tool() -> None:
     seen: list[dict] = []
     ft.set_offer_hook(lambda item: asyncio.sleep(0, result=seen.append(item)))
 
+    # 工具是每個對話一份（server_for），這裡直接建一支綁 work-1 的來驗來源有帶上
+    send_file = ft.make_send_file("work-1")
+
     async def run() -> None:
         src = TMP / "圖.png"
         src.write_bytes(b"\x89PNG fake")
-        r = await ft.send_file.handler({"path": str(src), "note": "做好的圖"})
+        r = await send_file.handler({"path": str(src), "note": "做好的圖"})
         check("傳檔成功", not r.get("is_error"), str(r)[:80])
         check("有通知手機", len(seen) == 1 and seen[0]["name"] == "圖.png", str(seen)[:80])
         check("mime 有猜出來", seen[0]["mime"] == "image/png", str(seen[0].get("mime")))
+        # 少了這個，卡片會掉進使用者當下正在看的那個對話
+        check("帶著發起的對話", seen[0]["conv_id"] == "work-1", str(seen[0].get("conv_id")))
 
-        r = await ft.send_file.handler({"path": "隨便亂寫"})
+        r = await send_file.handler({"path": "隨便亂寫"})
         check("路徑亂寫會被擋", r.get("is_error") is True)
         check("錯誤訊息看得懂", "絕對路徑" in r["content"][0]["text"],
               r["content"][0]["text"][:50])
@@ -161,6 +242,8 @@ def test_send_file_tool() -> None:
 if __name__ == "__main__":
     test_usage_record()
     test_usage_robust()
+    test_local_usage_partial_line()
+    test_local_usage_rewrite_no_double_count()
     test_outbox_validation()
     test_download()
     test_send_file_tool()

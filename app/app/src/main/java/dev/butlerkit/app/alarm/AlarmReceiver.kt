@@ -42,6 +42,10 @@ class AlarmReceiver : BroadcastReceiver() {
             )
         }
 
+        // 貪睡響完就把登記收掉。留著的話 scheduledIds 會累積一堆早就觸發過的
+        // id，之後每次 sync 都白白 cancel 它們一遍。
+        if (id.endsWith(AlarmScheduler.SNOOZE_SUFFIX)) AlarmScheduler.forgetSnooze(ctx, id)
+
         // 重複鬧鐘的下一次要現在就排——AlarmManager 沒有「每週重複」這種東西，
         // 每響一次就得自己接上下一次。順手把整批重排，過期的一次性鬧鐘會自動落榜。
         parseAgenda(Prefs(ctx).agendaCache)?.let { AlarmScheduler.sync(ctx, it) }

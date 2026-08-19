@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+from util import read_text_with_retry, replace_with_retry
 
 USAGE_FILE: Path = config.DATA_DIR / "usage.json"
 
@@ -39,7 +40,9 @@ def _load() -> dict[str, Any]:
     if not USAGE_FILE.exists():
         return _empty()
     try:
-        data = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+        # 加重試是為了不要把「有人正在換檔」誤判成壞檔——那會讓下一次寫入
+        # 用空結構蓋掉 92 天的用量歷史。真的壞掉才回空，那條取捨維持原樣。
+        data = json.loads(read_text_with_retry(USAGE_FILE))
     except (OSError, json.JSONDecodeError):
         return _empty()          # 壞檔就當沒有，用量表不值得讓服務起不來
     if not isinstance(data, dict) or not isinstance(data.get("days"), dict):
@@ -51,7 +54,7 @@ def _save(data: dict[str, Any]) -> None:
     USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = USAGE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(USAGE_FILE)
+    replace_with_retry(tmp, USAGE_FILE)
 
 
 def _prune(days: dict[str, Any]) -> None:

@@ -11,7 +11,7 @@ from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 import config
 from protocol import Frontend
 
-from . import agenda_tools, file_tools, persona
+from . import agenda_tools, file_tools, kanban_tools, location, persona
 from .safety import make_pretool_hook
 from .state import ConvState, eff_effort, eff_model
 
@@ -90,6 +90,49 @@ _RULE_SENDFILE = (
     "不用先問他要不要。純程式碼或設定檔就不必傳，貼在回覆裡比較快。"
 )
 
+# 5. 位置。
+#
+# 這條的重點也是時機。工具本身很好用（一句話就拿到地址），所以模型會很想用它——
+# 但每呼叫一次就是他的手機開一次 GPS，而且他不會看到任何提示。
+# 講清楚「需要才問、拿到就別重複問」比講用法重要。
+_RULE_WHERE = (
+    "要知道他人在哪就用 where_am_i，它會跟他手機要一次目前位置。"
+    "只有在位置真的會改變你的回答時才用（附近有什麼、路上要多久、天氣如何），"
+    "不要為了寒暄就去抓。同一件事問過一次就別再抓第二次。"
+    "拿到的資料會告訴你那是幾分鐘前的，久到不合理就講出來，不要當成他現在的位置。"
+)
+
+# 6. 不要自己重啟服務。
+#
+# 這條是實際踩出來的。改完伺服器程式想讓它生效，最直覺的動作就是去跑
+# restart_butler.ps1——但跑它的那個行程是伺服器的子孫，重啟會把自己一起收掉。
+# 使用者那端看到的是「講到一半突然斷線」，而且不知道為什麼。
+#
+# 這條兩份 append 都要有：改伺服器程式這件事在工作分頁反而更常發生。
+_RULE_NO_RESTART = (
+    "**絕對不要自己重啟 butler 服務**：不要執行 restart_butler.ps1，"
+    "不要去殺它的行程，也不要用任何方式讓它重新啟動。"
+    "你就跑在那個服務裡面，重啟等於把你自己關掉，他只會看到你講到一半消失。"
+    "伺服器的程式改完之後，直接告訴他「改好了，到工具頁按一下重新啟動才會生效」，"
+    "然後這件事就交給他，不要自己動手。"
+)
+
+# 7. 看板。
+#
+# 結構是「企劃分組、卡片是底下的細分工作」。模型不會憑空知道這組工具存在，
+# 也不會知道該用什麼粒度開卡——不講的話它要嘛整條線開一張、要嘛每個小步驟
+# 都開一張，兩種都會讓板子沒法用。
+_RULE_KANBAN = (
+    "他的工作看板在你手上（kanban_list / kanban_add / kanban_update）。"
+    "看板分待辦、進行中、完成三欄，一張卡片是一件細分工作。"
+    "開始做一件事就把它換到 doing，做完換到 done，卡住或需要他拍板就標 urgent 並在 note 寫清楚卡在哪。"
+    "他交代新工作就用 kanban_add 加上去，標題前面帶企劃名用「－」隔開（像「網站改版－看板拖放」），"
+    "加之前先 kanban_list 看既有的企劃名怎麼寫的，同一條線的前綴要一致。"
+    "粒度抓在「一件能單獨完成、講得出做完長什麼樣」的事，不要把整個專案開成一張卡，"
+    "也不要把每個步驟都開一張。"
+    "不要自己刪卡片，要拿掉他會自己在 App 上封存。"
+)
+
 
 def _amnesia_rule() -> str:
     """失憶自救。沒設 BUTLER_NOTES_FILE 就整條不加。
@@ -120,7 +163,8 @@ def _amnesia_rule() -> str:
 # 助理對話：人格 + 全部核心規則。
 SYSTEM_APPEND = (
     persona.load(config.PERSONA) + _amnesia_rule()
-    + _RULE_AGENDA + _RULE_SENDFILE + _RULE_ASK_MARKER + _RULE_MARKERS
+    + _RULE_AGENDA + _RULE_KANBAN + _RULE_SENDFILE + _RULE_WHERE
+    + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
 )
 
 # ── 工作區分頁：不套人格 ──────────────────────────────────────────────────────
@@ -134,7 +178,7 @@ SYSTEM_APPEND = (
 # 其餘一律交還給 Claude Code 的預設行為，這才是「純工作」該有的樣子。
 WORK_APPEND = (
     persona.load(config.WORK_PERSONA)
-    + _RULE_SENDFILE + _RULE_ASK_MARKER + _RULE_MARKERS
+    + _RULE_SENDFILE + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
 )
 
 
@@ -149,13 +193,18 @@ def servers_for(state: ConvState) -> dict:
     行事曆／鬧鐘／記帳只給助理——那是生活資料，工作對話開著只會讓模型在
     「幫我記一下這個 bug」的時候把東西寫進他的記帳本。
     傳檔兩邊都要：工作做出來的圖表與報告一樣得送到他手機上。
+    傳檔工具是**每個對話一份**（見 file_tools.server_for），這樣送出去的檔案
+    才知道自己是從哪一段對話出來的。
     """
+    files = file_tools.server_for(state.conv_id)
     if state.conv_id == config.PRIMARY_CONV:
         return {
             agenda_tools.SERVER_NAME: agenda_tools.SERVER,
-            file_tools.SERVER_NAME: file_tools.SERVER,
+            kanban_tools.SERVER_NAME: kanban_tools.SERVER,
+            location.SERVER_NAME: location.SERVER,
+            file_tools.SERVER_NAME: files,
         }
-    return {file_tools.SERVER_NAME: file_tools.SERVER}
+    return {file_tools.SERVER_NAME: files}
 
 
 def sanitize_append(text: str) -> str:

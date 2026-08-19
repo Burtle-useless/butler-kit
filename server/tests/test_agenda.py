@@ -143,6 +143,10 @@ def test_periods() -> None:
         ({"periods": [{"no": 1, "start": "08:10", "end": "09:00"},
                       {"no": 1, "start": "09:10", "end": "10:00"}]}, "重複的節次"),
         ({"periods": [{"no": 1, "start": "早上八點", "end": "09:00"}]}, "自然語言時間"),
+        # 交疊：原本只查單節自己的 end > start，這組兩節都合法但撞在一起，
+        # 而 now_status 取第一個命中的節次 → 「現在第幾節」變成看排序運氣
+        ({"periods": [{"no": 1, "start": "08:10", "end": "09:00"},
+                      {"no": 2, "start": "08:50", "end": "09:40"}]}, "兩節時間重疊"),
     ]:
         r = client.put("/v1/agenda/periods", json=bad)
         check(f"擋下{why}", r.status_code == 400, str(r.status_code))
@@ -164,6 +168,107 @@ def test_periods() -> None:
     check("現況查詢的欄位齊全",
           {"weekday", "period", "current", "next", "today"} <= set(st), str(list(st)))
     check("星期用 0 到 6", 0 <= st["weekday"] <= 6, str(st["weekday"]))
+
+
+def test_type_errors_are_400() -> None:
+    """型別轉不過去要回 400，不是 500。
+
+    `_guard` 只攔 AgendaError，而路由層自己做的 `int()`／`float()` 拋的是
+    ValueError——它直接穿過去變成 500，App 只看得到「伺服器壞了」，
+    助理也拿不到能自我修正的中文訊息（它只會收到一個 SDK 例外）。
+    """
+    print("\n[型別錯誤回 400 不是 500]")
+    r = client.post("/v1/agenda/events", json={
+        "title": "看牙", "start": "2026-08-20T09:00", "remind_min": "稍後"})
+    check("remind_min 非數字 → 400", r.status_code == 400, str(r.status_code))
+    r = client.post("/v1/agenda/ledger", json={"amount": "一百", "category": "餐飲"})
+    check("amount 非數字 → 400", r.status_code == 400, str(r.status_code))
+    # 正常值當然還是要收得下來，別為了擋錯連對的一起擋
+    r = client.post("/v1/agenda/events", json={
+        "title": "看牙", "start": "2026-08-20T09:00", "remind_min": "15"})
+    check("字串數字仍可接受", r.status_code == 200, r.text[:80])
+    check("而且真的轉成數字了", r.json()["remind_min"] == 15, str(r.json().get("remind_min")))
+
+
+def test_update_cross_field() -> None:
+    """`update` 不可以繞過新增時的跨欄位驗證。
+
+    這類錯誤不會報錯，只會安靜地給錯答案：課表一旦出現 from=5 to=1，
+    `now_status` 的區間判斷永遠不成立，「他現在在上課嗎」一律答沒有——
+    助理於是在上課時間打擾他。
+    """
+    print("\n[update 的跨欄位驗證]")
+    c = store.add_course(name="物理", day=0, from_period=3, to_period=5)
+    try:
+        store.update("courses", c["id"], {"to_period": 1})
+        check("擋下 to_period 比 from_period 早", False, "竟然改成功了")
+    except store.AgendaError:
+        check("擋下 to_period 比 from_period 早", True)
+    after = next(x for x in store.list_kind("courses") if x["id"] == c["id"])
+    check("失敗的更新沒有落地", after["to_period"] == 5, str(after["to_period"]))
+
+    e = store.add_entry(amount=100, category="餐飲")
+    try:
+        store.update("ledger", e["id"], {"amount": -50})
+        check("擋下負數金額", False, "竟然改成功了")
+    except store.AgendaError:
+        check("擋下負數金額", True)
+    try:
+        store.update("ledger", e["id"], {"amount": "很多"})
+        check("擋下非數字金額", False, "竟然改成功了")
+    except store.AgendaError:
+        check("擋下非數字金額", True)
+    after_e = next(x for x in store.list_kind("ledger") if x["id"] == e["id"])
+    check("金額沒有被改壞", after_e["amount"] == 100, str(after_e["amount"]))
+    # 合法的更新照樣要能過
+    store.update("ledger", e["id"], {"amount": 250})
+    after_e = next(x for x in store.list_kind("ledger") if x["id"] == e["id"])
+    check("合法更新仍可通過", after_e["amount"] == 250, str(after_e["amount"]))
+
+    # 把每週重複的鬧鐘改成「只響一次」時要自己補上日期。留 null 的話手機端
+    # 只能理解成「下一次到這個時間」，而它響完會重排——設一次的鬧鐘天天響。
+    # add_alarm 早就有補，update 這條路原本是缺口。
+    a = store.add_alarm(time="07:30", days=[0, 1, 2])
+    check("每週重複的鬧鐘不需要日期", a["date"] is None, str(a["date"]))
+    store.update("alarms", a["id"], {"days": []})
+    after_a = next(x for x in store.list_kind("alarms") if x["id"] == a["id"])
+    check("改成只響一次時補上日期", after_a["date"] is not None, str(after_a["date"]))
+    # 反向：改回每週重複不該被硬塞日期
+    store.update("alarms", a["id"], {"days": [3], "date": None})
+    after_a2 = next(x for x in store.list_kind("alarms") if x["id"] == a["id"])
+    check("改回每週重複時不補日期", after_a2["date"] is None, str(after_a2["date"]))
+
+
+def test_corrupt_file_is_kept() -> None:
+    """壞掉的 agenda.json 不可以被靜默清空。
+
+    先前 `_load` 解析失敗就回空結構，而下一次任何寫入會把那個空結構整份存回去——
+    行程、鬧鐘、記帳、課表一次全滅，原檔也被蓋掉。壞的通常只是尾端幾個 byte
+    （寫到一半斷電、磁碟錯誤），前面的內容本來救得回來。
+    現在改成先把壞檔改名保留再回空的：服務照常起來，資料留著等人救。
+    """
+    print("\n[壞檔要留著不能被蓋掉]")
+    # 先存一筆真的資料，再把檔案弄壞（模擬尾端被截斷）
+    store.add_event(title="重要的事", start="2026-08-20T09:00")
+    good = store.AGENDA_FILE.read_text(encoding="utf-8")
+    store.AGENDA_FILE.write_text(good[: len(good) // 2], encoding="utf-8")
+
+    items = store.list_kind("events")
+    check("讀壞檔不會讓服務掛掉", isinstance(items, list), str(type(items)))
+
+    kept = list(store.AGENDA_FILE.parent.glob("agenda.json.corrupt-*"))
+    check("壞檔被改名保留", len(kept) == 1, f"找到 {len(kept)} 個")
+    if kept:
+        check("保留的內容就是原本那份壞檔",
+              kept[0].read_text(encoding="utf-8") == good[: len(good) // 2])
+        check("救得回原本的資料", "重要的事" in kept[0].read_text(encoding="utf-8"))
+
+    # 接著寫入不該再炸，而且原檔位置會重新長出一份乾淨的
+    store.add_event(title="後來的事", start="2026-08-21T09:00")
+    titles = [e["title"] for e in store.list_kind("events")]
+    check("壞檔之後仍可正常使用", titles == ["後來的事"], str(titles))
+    for f in kept:
+        f.unlink()
 
 
 def test_tools() -> None:
@@ -236,6 +341,9 @@ if __name__ == "__main__":
     test_summary()
     test_courses()
     test_periods()
+    test_type_errors_are_400()
+    test_update_cross_field()
+    test_corrupt_file_is_kept()
     test_tools()
     print(f"\n{'全部通過' if not FAILED else '失敗：' + ', '.join(FAILED)}")
     sys.exit(1 if FAILED else 0)

@@ -1,5 +1,9 @@
 package dev.butlerkit.app.notify
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
 /**
  * App 現在是不是開著的（使用者看得到畫面）。
  *
@@ -13,6 +17,23 @@ package dev.butlerkit.app.notify
  * 而通知是在服務的背景協程裡發的。
  */
 object AppForeground {
+    private val _flow = MutableStateFlow(false)
+
+    /**
+     * 同一件事的可觀察版本。
+     *
+     * ViewModel 的 SSE 迴圈要靠它決定「現在該不該由我連」——架構上約定同時只有一條
+     * 連線（前景 ViewModel、背景 ButlerService），但那個約定原本只寫在註解裡，
+     * 進背景時**沒有任何程式碼真的把前景那條停掉**。兩條並存的後果不只是多一份
+     * 流量：它們共用 `prefs.lastSeq` 這一個游標，互相覆寫之後畫面會重複、
+     * 或者背景那條的續傳基準被拉走而漏掉推播。
+     */
+    val flow: StateFlow<Boolean> = _flow.asStateFlow()
+
     @Volatile
     var visible: Boolean = false
+        set(v) {
+            field = v
+            _flow.value = v
+        }
 }

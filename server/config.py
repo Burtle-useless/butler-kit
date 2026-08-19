@@ -164,9 +164,16 @@ CONFIRM_ENABLED: Final[bool] = (os.environ.get("CONFIRM_DANGEROUS") or "1").stri
 CONFIRM_TIMEOUT_SEC: Final[float] = 300.0
 
 # ── 傳輸 ─────────────────────────────────────────────────────────────────────
-RING_BUFFER_SIZE: Final[int] = 2000                   # 每裝置保留的事件數（供斷線續傳）
+# 全域共用一份（不是每裝置一份），所有對話的事件都排在同一條 ring 上。
+# 從 2000 提到 6000 是 DELTA_COALESCE_MS 生效後的配套：先前 delta 實際上兩秒才送
+# 一則，一個長回合幾百則就到頂；改成按時間窗送之後，同樣的回合會產生數倍事件量，
+# 沿用 2000 會讓斷線續傳的視窗縮到只剩一兩分鐘。一則事件約數百 bytes，6000 則
+# 也才幾 MB，用記憶體換續傳可靠度很划算。
+RING_BUFFER_SIZE: Final[int] = 6000
 SSE_KEEPALIVE_SEC: Final[int] = 15                    # 心跳間隔，防中間裝置掐斷閒置連線
-DELTA_COALESCE_MS: Final[int] = 100                   # delta 合併窗，避免弱網被逐字事件淹沒
+# delta 合併窗。200ms＝每秒五次，人眼看起來已經是連續打字，
+# 而事件量只有 100ms 的一半。這個值先前**定義了卻沒有人讀**，見 runner._DeltaBuffer。
+DELTA_COALESCE_MS: Final[int] = 200
 
 
 def startup_banner() -> str:
