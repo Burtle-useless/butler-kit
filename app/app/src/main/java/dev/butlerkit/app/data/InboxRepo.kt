@@ -29,7 +29,7 @@ import java.io.File
  *
  * 下載完成的檔名記在 [saved] 裡而不是去掃磁碟：MediaStore 存進去之後
  * 要反查「這個 file_id 存過沒有」得跑一次 query，為了一個勾勾不值得。
- * 重開 App 就忘記，也沒關係——再存一次只是多一個檔案。
+ * 這份記錄會寫進 [Prefs.savedFiles]，撐得過 App 被系統回收與重開機。
  */
 object InboxRepo {
 
@@ -40,7 +40,10 @@ object InboxRepo {
     private val _downloading = MutableStateFlow<Set<String>>(emptySet())
     val downloading: StateFlow<Set<String>> = _downloading.asStateFlow()
 
-    /** 已經存好的 file_id → 存到哪裡（給使用者看的路徑描述）。 */
+    /**
+     * 已經存好的 file_id → 存到哪裡（給使用者看的路徑描述）。
+     * 由 [restore] 從 Prefs 載回來，每次存檔成功再寫回去（見 [rememberSaved]）。
+     */
     private val _saved = MutableStateFlow<Map<String, String>>(emptyMap())
     val saved: StateFlow<Map<String, String>> = _saved.asStateFlow()
 
@@ -49,8 +52,9 @@ object InboxRepo {
      *
      * 跟 [saved] 分開而不是共用：一般檔案存進「下載」資料夾就結束了，
      * APK 存下來只是中途站——按鈕要從「下載」變成「安裝」，那是另一種狀態。
-     * 而且這個狀態在重開 App 之後還原得回來（[ApkUpdate.stagedIds] 掃磁碟），
-     * [saved] 刻意不還原。
+     * 兩者都撐得過 App 重開，但還原的來源不同：這個掃暫存目錄（[ApkUpdate.stagedIds]），
+     * 檔案在不在是唯一的事實；[saved] 讀 Prefs 的記錄，因為存進「下載」資料夾之後
+     * 那個檔案就不歸 App 管了。
      */
     private val _staged = MutableStateFlow<Set<String>>(emptySet())
     val staged: StateFlow<Set<String>> = _staged.asStateFlow()
@@ -69,6 +73,9 @@ object InboxRepo {
      * 檔案要不要存進手機跟使用者當下在看哪一頁無關，所以生命週期歸 App。
      */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** [saved] 最多記幾筆。一天傳不到幾個檔，300 筆夠久到不需要考慮。 */
+    private const val SAVED_LIMIT = 300
 
     fun clearError() {
         _error.value = null
@@ -94,10 +101,34 @@ object InboxRepo {
         scope.launch { download(app, client, file) }
     }
 
-    /** App 啟動時掃一次暫存目錄，把「已經備好的更新」還原回來。 */
-    fun restoreStaged(ctx: Context) {
+    /**
+     * App 啟動時把兩份狀態還原回來：已經備好的更新（掃暫存目錄），
+     * 以及下載過哪些檔案（讀 Prefs）。
+     */
+    fun restore(ctx: Context) {
         val app = ctx.applicationContext
-        scope.launch { _staged.value = ApkUpdate.stagedIds(app) }
+        scope.launch {
+            _staged.value = ApkUpdate.stagedIds(app)
+            _saved.value = Prefs(app).savedFiles
+        }
+    }
+
+    /**
+     * 記下「這個檔案存過了」，並寫進 Prefs。
+     *
+     * 上限 [SAVED_LIMIT] 筆、滿了丟最早記的：這份清單只是給眼睛看的標記，
+     * 而 file_id 只增不減，不設限就是一個永遠不會被清理的欄位。
+     * 重存一次要先 remove 再 put，讓它重新排到最後面——否則它會因為
+     * 「最早被記過」而先被丟掉，明明才剛存完。
+     */
+    private fun rememberSaved(ctx: Context, fileId: String, where: String) {
+        val next = LinkedHashMap(_saved.value).apply {
+            remove(fileId)
+            put(fileId, where)
+        }
+        while (next.size > SAVED_LIMIT) next.remove(next.keys.first())
+        _saved.value = next
+        Prefs(ctx).savedFiles = next
     }
 
     /**
@@ -183,7 +214,7 @@ object InboxRepo {
         return result.fold(
             onSuccess = { where ->
                 if (apk) _staged.update { it + file.id }
-                else _saved.update { it + (file.id to where) }
+                else rememberSaved(ctx, file.id, where)
                 true
             },
             onFailure = { e ->

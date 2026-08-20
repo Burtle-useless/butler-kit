@@ -28,9 +28,9 @@ class ButlerApp : Application() {
         // 兩支都是冪等的（unique work 用 KEEP、alarm 用同一個 requestCode 覆蓋）
         UsageWorker.schedule(this)
         WidgetTick.reschedule(this)
-        // 上次沒裝完的更新還在暫存區的話，把「已經備好」這件事撿回來——
-        // 不撿的話清單上那一列會退回「下載」，同一支 APK 又抓一次
-        InboxRepo.restoreStaged(this)
+        // 把「已經備好的更新」與「下載過哪些檔案」撿回來——
+        // 不撿的話清單上的標記全部退回原狀，同一個東西又抓一次
+        InboxRepo.restore(this)
 
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {

@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 
 /**
  * 連線設定與續傳游標。
@@ -123,6 +126,26 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putStringSet(KEY_SCHEDULED, v).apply()
 
     /**
+     * 已經下載過的檔案：file_id → 存到哪裡（給使用者看的描述）。
+     *
+     * 這份原本只活在記憶體裡，理由是「重存一次只是多一個檔案」。實際用起來不是：
+     * App 一被系統回收，整份清單就全部退回「沒下載過」的樣子，
+     * 使用者只能靠記憶分辨哪幾個抓過了——檔案多的時候等於沒有這個標記。
+     *
+     * 存 StringSet 不行（要的是成對的 id 與位置），所以序列化成 JSON 塞一個 String。
+     * 只有幾十個字元乘上筆數，SharedPreferences 撐得住。
+     */
+    var savedFiles: Map<String, String>
+        get() = runCatching {
+            Json.decodeFromString(SAVED_SERIALIZER, sp.getString(KEY_SAVED_FILES, "") ?: "")
+        }.getOrDefault(emptyMap())
+        // serializer 明寫出來：單參數的 encodeToString 是擴充函式，會輸給
+        // Json 自己那個吃 (SerializationStrategy, value) 的成員函式，編不過
+        set(v) = sp.edit()
+            .putString(KEY_SAVED_FILES, Json.encodeToString(SAVED_SERIALIZER, v))
+            .apply()
+
+    /**
      * 面對面翻譯上次選的兩個語言，存 `TalkLang` 的 enum name。
      *
      * 存這個是因為換語言要重新下載／載入語言包（各約 30MB），
@@ -150,6 +173,10 @@ class Prefs(context: Context) {
         const val KEY_USAGE = "usage_cache"
         private const val KEY_USAGE_AT = "usage_at"
         private const val KEY_SCHEDULED = "scheduled_ids"
+        private const val KEY_SAVED_FILES = "saved_files"
+
+        /** [savedFiles] 的 JSON serializer。 */
+        private val SAVED_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
         private const val KEY_BUSY_SINCE = "busy_since"
         private const val KEY_TALK_MINE = "talk_mine"
         private const val KEY_TALK_THEIRS = "talk_theirs"
