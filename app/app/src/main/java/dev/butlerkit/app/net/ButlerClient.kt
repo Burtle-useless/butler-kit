@@ -38,6 +38,13 @@ fun humanError(t: Throwable?, httpCode: Int? = null): String {
         // （例如伺服器回的中文 detail 帶了數字）就會誤報「配對失效」，
         // 而那句話會讓人跑去重新配對，把好好的裝置解掉。
         httpCode == 401 || httpCode == 403 -> "配對失效了，要重新配對一次。"
+        // host 填了 IP（或任何非 ts.net 的位址）就會走到這裡：明文白名單是編譯期
+        // 資源、只放行 ts.net，Android 直接把連線擋掉。原本沒有這條，訊息落到最後
+        // 的 else 顯示英文原文 `CLEARTEXT communication to … not permitted by
+        // network security policy`，而頂欄那行 maxLines=1，尾巴看不到；空對話畫面
+        // 又寫死「Tailscale 開了沒？」——人會去查 Tailscale，但那跟這件事無關。
+        m.contains("cleartext", ignoreCase = true) ->
+            "這個位址不能走明文連線。host 要填 Tailscale 的 ts.net 主機名，填 IP 會被 Android 擋掉。"
         t is java.net.UnknownHostException -> "找不到電腦的位址，去設定確認主機那一欄。"
         t is java.net.SocketTimeoutException || "ETIMEDOUT" in m || "timeout" in m ->
             "電腦沒回應，它可能睡著了。"

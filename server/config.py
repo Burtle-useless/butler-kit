@@ -69,7 +69,7 @@ CLAUDE_CLI: Final[str] = (
 
 # ── 監聽位址（安全地基，見計畫風險 #7）──────────────────────────────────────
 PORT: Final[int] = int(os.environ.get("BUTLER_PORT") or 47362)
-# 開發旗標：允許綁 127.0.0.1。預設關閉，只在本機開發期手動開。
+# 開發旗標：**強制**綁 127.0.0.1。預設關閉，只在本機開發期手動開。
 DEV_MODE: Final[bool] = (os.environ.get("BUTLER_DEV") or "0").strip() == "1"
 
 # Tailscale 用 CGNAT 網段 100.64.0.0/10 配發節點位址
@@ -125,12 +125,18 @@ def resolve_bind_host() -> str:
     引擎跑在 bypassPermissions 底下，任何能打到這個 port 的人都能對這台電腦
     下任意指令。綁 0.0.0.0 在公用 Wi-Fi 上等於把整台電腦交出去。
     找不到 tailnet 位址就拒絕啟動，不做任何 fallback。
+
+    DEV_MODE **優先於** tailnet，不是「找不到 tailnet 時的退路」。這個旗標的用途是
+    「隔離在本機驗證服務本身」，有裝 Tailscale 的人設了它卻照樣綁上 tailnet 的話，
+    等於在不知情的狀況下把一個 bypassPermissions 的服務開給整個 tailnet 看得到。
+    文件、下面那句錯誤訊息、main.py 的 `not DEV_MODE and …` 都寫「只綁 127.0.0.1」，
+    行為要對得上。
     """
+    if DEV_MODE:
+        return "127.0.0.1"
     ip = find_tailnet_ip()
     if ip:
         return ip
-    if DEV_MODE:
-        return "127.0.0.1"
     raise RuntimeError(
         "找不到 Tailscale 位址（100.64.0.0/10），拒絕啟動。\n"
         "  → 確認 Tailscale 已安裝並登入：tailscale status\n"
