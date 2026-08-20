@@ -1302,11 +1302,12 @@ private fun InputDock(
             cursorBrush = SolidColor(Palette.Accent),
             decorationBox = { inner ->
                 Box {
-                    if (value.isEmpty()) {
+                    // 平常不放提示字，空的輸入框本來就看得懂。
+                    // 只有在等你回答選項題時才提醒一句，那句有功能意義
+                    if (value.isEmpty() && answering) {
                         Text(
-                            if (answering) "回答上面那題" else "有事就說",
-                            color = if (answering) Palette.Accent.copy(alpha = 0.7f)
-                            else Palette.TextFaint,
+                            "回答上面那題",
+                            color = Palette.Accent.copy(alpha = 0.7f),
                             fontSize = Type.Body,
                         )
                     }
