@@ -89,6 +89,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.butlerkit.app.data.InboxRepo
@@ -659,10 +660,15 @@ private fun ChatBody(
             ) {
                 PetFace(state.pet, 120.dp)
                 Text(
-                    if (!state.connected) "……連不上電腦。Tailscale 開了沒？"
+                    // 連不上時印真正的原因。頂欄那行紅字是 maxLines=1，長訊息的尾巴
+                    // 會被截掉（明文被擋時最關鍵的那半句正好在後面），這裡有整片空間。
+                    // 原本寫死「Tailscale 開了沒？」——連不上的原因不只一種，
+                    // 照著那句去查 Tailscale 會走一段冤枉路。
+                    if (!state.connected) "……" + (state.connError ?: "連不上電腦。Tailscale 開了沒？")
                     else "有事就說。",
                     color = Palette.TextDim, fontSize = Type.Body,
-                    modifier = Modifier.padding(top = 16.dp),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 16.dp, start = Space.Screen, end = Space.Screen),
                 )
             }
         } else {
@@ -764,17 +770,6 @@ private fun ChatTopBar(
             .firstOrNull { it.id == state.currentConv }?.title ?: state.currentConv
     }
 
-    // 報頭：標題行＋日期刊別，底下壓一粗一細的雙規線。
-    // 「晚報／早報」跟著時鐘走——沒有功能，但報頭少了刊別就只是個標題列。
-    val edition = remember {
-        val cal = java.util.Calendar.getInstance()
-        val md = "%02d.%02d".format(
-            cal.get(java.util.Calendar.MONTH) + 1,
-            cal.get(java.util.Calendar.DAY_OF_MONTH),
-        )
-        val part = if (cal.get(java.util.Calendar.HOUR_OF_DAY) < 12) "早報" else "晚報"
-        "$md · $part"
-    }
     Column(Modifier.fillMaxWidth().padding(horizontal = Space.Screen)) {
         Row(
             // heightIn 不是 height：系統字級調大時標題會需要更高的一列，
@@ -803,10 +798,9 @@ private fun ChatTopBar(
                     fontFamily = FontFamily.SansSerif,
                     modifier = Modifier.padding(end = 8.dp), maxLines = 1)
             }
-            // 刊別代替原本的綠點：連得上是日期，連不上直接印「斷線」。
-            // 文字比一顆 7dp 的點誠實——點只有顏色，色弱看不出差別
+            // 用文字而不是一顆綠點：點只有顏色，色弱看不出差別
             Text(
-                if (state.connected) edition else "斷線",
+                if (state.connected) "已連線" else "斷線",
                 fontSize = Type.Tiny,
                 fontFamily = FontFamily.SansSerif,
                 color = if (state.connected) Palette.TextFaint else Palette.Danger,

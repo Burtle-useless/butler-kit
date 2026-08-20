@@ -69,7 +69,7 @@ import dev.butlerkit.app.ui.ChatViewModel
 import dev.butlerkit.app.ui.PetFace
 import dev.butlerkit.app.ui.Palette
 import dev.butlerkit.app.ui.PetMood
-import dev.butlerkit.app.ui.SerifProbe
+import dev.butlerkit.app.ui.Fonts
 import dev.butlerkit.app.ui.SettingsScreen
 import dev.butlerkit.app.ui.ToolsScreen
 import dev.butlerkit.app.ui.Type
@@ -162,10 +162,10 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             MaterialTheme(colorScheme = ButlerColors) {
-                // 全 App 預設襯線（報紙內文是明體）。這裡鋪一層 LocalTextStyle，
-                // 沒指定 fontFamily 的 Text 全部吃到；時間、統計那類欄外資訊
-                // 要在各自的 Text 上明確指定無襯線（FontFamily.SansSerif）。
-                ProvideTextStyle(TextStyle(fontFamily = SerifProbe.Serif)) {
+                // 全 App 的預設字型鋪在這一層，沒指定 fontFamily 的 Text 全部吃到。
+                // 要換字型改 Theme.kt 的 Fonts.Base 一處就好，不要改這裡。
+                // （中文襯線要走 SerifProbe.Serif，`FontFamily.Serif` 對中文無效）
+                ProvideTextStyle(TextStyle(fontFamily = Fonts.Base)) {
                     var configured by remember { mutableStateOf(prefs.isConfigured()) }
                     if (!configured) {
                         SetupScreen(prefs) { configured = true }

@@ -16,7 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextStyle
 import androidx.core.content.ContextCompat
 import dev.butlerkit.app.ui.ButlerColors
-import dev.butlerkit.app.ui.SerifProbe
+import dev.butlerkit.app.ui.Fonts
 
 /**
  * 面對面翻譯的獨立畫面。
@@ -49,8 +49,8 @@ class TalkActivity : ComponentActivity() {
             // 兩個欄位，其餘全是 M3 預設的淡紫——水波紋、輸入框游標與邊框、
             // 下拉選單底色全都跟 App 其他地方不一樣，一進翻譯畫面就像換了個 App。
             MaterialTheme(colorScheme = ButlerColors) {
-                // 預設襯線，跟 MainActivity 同一套（報紙內文）
-                ProvideTextStyle(TextStyle(fontFamily = SerifProbe.Serif)) {
+                // 跟 MainActivity 同一個預設字型，改 Theme.kt 的 Fonts.Base 兩邊一起變
+                ProvideTextStyle(TextStyle(fontFamily = Fonts.Base)) {
                     TalkScreen(micGranted = micGranted, onClose = { finish() })
                 }
             }

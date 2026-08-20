@@ -462,7 +462,7 @@ private fun Field(
             value = value, onValueChange = onChange,
             textStyle = TextStyle(
                 color = Palette.Text, fontSize = Type.Body,
-                lineHeight = Type.BodyLine, fontFamily = SerifProbe.Serif,
+                lineHeight = Type.BodyLine, fontFamily = Fonts.Base,
             ),
             cursorBrush = SolidColor(Palette.Accent),
             maxLines = maxLines,

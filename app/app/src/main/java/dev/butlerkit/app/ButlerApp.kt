@@ -8,7 +8,6 @@ import dev.butlerkit.app.data.Prefs
 import dev.butlerkit.app.notify.AppForeground
 import dev.butlerkit.app.notify.ButlerService
 import dev.butlerkit.app.notify.Notifier
-import dev.butlerkit.app.ui.SerifProbe
 import dev.butlerkit.app.widget.UsageWorker
 import dev.butlerkit.app.widget.WidgetTick
 
@@ -23,9 +22,6 @@ class ButlerApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Notifier.ensureChannels(this)
-        // 先解析中文襯線字型（見 SerifProbe）。整套視覺建立在襯線字上，而
-        // FontFamily.Serif 對中文是無效的，要直接指名系統上那個 CJK 檔。
-        SerifProbe.Serif
         // widget 的兩條更新路線。放 Application 而不是 MainActivity：widget 貼在桌面上
         // 不代表使用者會打開 App，掛在 Activity 上的話重開機後可能好幾天都沒排到。
         // 兩支都是冪等的（unique work 用 KEEP、alarm 用同一個 requestCode 覆蓋）

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   通知列小圖示。系統會把它整片染成單色，所以只能用實心剪影、不能靠顏色區分，
-  細節多了會糊成一團。這裡取助理的螢幕臉輪廓：圓角方框＋兩隻眼睛挖空。
+  細節多了會糊成一團。**佔位用的一顆點**，換吉祥物時跟 launcher 圖示一起換。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -11,6 +11,5 @@
     android:tint="#FFFFFF">
     <path
         android:fillColor="#FFFFFF"
-        android:fillType="evenOdd"
-        android:pathData="M4,6 m3,0 h10 a3,3 0 0 1 3,3 v6 a3,3 0 0 1 -3,3 h-10 a3,3 0 0 1 -3,-3 v-6 a3,3 0 0 1 3,-3 z M9,11 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0 z M15,11 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0 z" />
+        android:pathData="M12,12 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 z" />
 </vector>

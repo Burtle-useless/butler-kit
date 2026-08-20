@@ -36,24 +36,24 @@ import dev.butlerkit.app.MainActivity
  * **不跟隨系統日夜**：App 本體就只有深色一種，widget 跟著深色才不會兩個地方長得不像。
  */
 internal object W {
-    // 2026-08-19：跟著 App 換成報紙（紙、墨、朱紅）。這幾個值是 Palette 的抄本，
-    // 每個值後面標的是它抄自哪個欄位，之後 Palette 動了這裡要跟著動——
-    // 差幾個色階單看 widget 不明顯，但點進 App 那一瞬間會覺得換了個地方。
-    val Bg = ColorProvider(Color(0xFFFBFAF5))       // Palette.Surface：widget 是一張紙
-    val Text = ColorProvider(Color(0xFF1A1A1A))     // Palette.Text
-    val Dim = ColorProvider(Color(0xFF57534A))      // Palette.TextDim
-    val Faint = ColorProvider(Color(0xFF8A867E))    // Palette.TextFaint
-    val Accent = ColorProvider(Color(0xFFB0342A))   // Palette.Accent
-    val Line = ColorProvider(Color(0xFFC9C5BC))     // Palette.Line
-    val Ok = ColorProvider(Color(0xFF3E6B4F))       // Palette.Ok
-    val Warn = ColorProvider(Color(0xFF8A6420))     // Palette.Warn
-    val Danger = ColorProvider(Color(0xFFA8322D))   // Palette.Danger
-    val Now = ColorProvider(Color(0x1FB0342A))      // Palette.AccentSoft：正在進行中的那列
-    val Bar = ColorProvider(Color(0x66B0342A))      // 長條圖的過去幾天，今天那根才是實色
+    // 這幾個值是 Palette 的抄本，每個值後面標的是它抄自哪個欄位。
+    // **換色票時這裡要跟著改**——差幾個色階單看 widget 不明顯，但點進 App
+    // 那一瞬間會覺得換了個地方。
+    val Bg = ColorProvider(Color(0xFFFAFAFA))       // Palette.Surface
+    val Text = ColorProvider(Color(0xFF1F1F1F))     // Palette.Text
+    val Dim = ColorProvider(Color(0xFF5F5F5F))      // Palette.TextDim
+    val Faint = ColorProvider(Color(0xFF9A9A9A))    // Palette.TextFaint
+    val Accent = ColorProvider(Color(0xFF4A6FA5))   // Palette.Accent
+    val Line = ColorProvider(Color(0xFFDDDDDD))     // Palette.Line
+    val Ok = ColorProvider(Color(0xFF2E7D52))       // Palette.Ok
+    val Warn = ColorProvider(Color(0xFFB07C1E))     // Palette.Warn
+    val Danger = ColorProvider(Color(0xFFC0392B))   // Palette.Danger
+    val Now = ColorProvider(Color(0x1F4A6FA5))      // Palette.AccentSoft：正在進行中的那列
+    val Bar = ColorProvider(Color(0x664A6FA5))      // 長條圖的過去幾天，今天那根才是實色
 
-    // 分頁色收斂成墨色（報紙只有黑與紅），課表 widget 跟 App 內的課表頁一致
-    val Course = ColorProvider(Color(0xFF1A1A1A))       // Accents.Course
-    val CourseNow = ColorProvider(Color(0x1A1A1A1A))    // 同色的襯底
+    // 課表 widget 跟 App 內的課表頁一致（Accents 預設全指向 Accent）
+    val Course = ColorProvider(Color(0xFF4A6FA5))       // Accents.Course
+    val CourseNow = ColorProvider(Color(0x1F4A6FA5))    // 同色的襯底
 }
 
 /**

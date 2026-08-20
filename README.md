@@ -37,15 +37,21 @@
 
 服務永遠不綁 `0.0.0.0`，拿不到 tailnet 位址就拒絕啟動，這條沒有開關。
 
-## 換一套皮
+## 外觀要自己設計
 
-整套視覺集中在一個檔案：`app/app/src/main/java/dev/butlerkit/app/ui/Theme.kt`——
-色票、圓角、字級全在裡面，改它全 App 跟著變。預設外觀是報紙風
-（紙白、墨黑、襯線字）。
+**附的外觀是佔位用的。** 白底灰字、吉祥物的位置上只有一顆會依狀態變色的點——
+能跑、看得懂，但毫無個性。原封不動編出去，你的 App 會跟每一支沒改過的
+butler-kit 長得一模一樣。
 
-想換風格的話，建議裝 `ui-ux-pro-max` 這個 Claude Code skill
-（開源，內含 49 種通用 UI 風格與色彩字型資料庫）。
-工作流程：請 Claude 用該 skill 產幾個方向的預覽 → 挑一個 → 只改 Theme.kt 套用。
+要改的東西集中在兩個檔，改完不會波及其他四十幾個：
+
+- `app/.../ui/Theme.kt` — 色票、圓角、字級、預設字型，改它全 App 跟著變
+- `app/.../ui/PetBot.kt` — 吉祥物。整支換掉都行，只要保住 `PetMood` 七個狀態
+  與 `PetFace()` 的簽名
+
+兩個檔的檔頭註解都寫了怎麼改、有哪些坑。想找靈感的話，`ui-ux-pro-max` 這個
+Claude Code skill（開源，內含 49 種 UI 風格與色彩字型資料庫）可以先產幾個
+方向的預覽，挑一個再套進 Theme.kt。
 
 一句提醒：中文襯線字的取得方式見 `ui/SerifProbe.kt` 的註解——
 `FontFamily.Serif` 對中文是無效的，要直接載系統的 NotoSerifCJK。

@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- 與 Theme.kt 的 Palette.Bg 對齊。啟動畫面若跟 App 內色溫不同，
-         進 App 會有一瞬間的斷層。
-         （2026-08-19 換報紙版：紙白。上一版是深藍黑 #0B0F17。） -->
-    <color name="bg">#F4F2EC</color>
-    <!-- 圖示底色＝紙面（Palette.Surface）。報紙桌寵自帶墨線框，
-         不需要靠底色做對比。 -->
-    <color name="ic_launcher_bg">#FBFAF5</color>
+         進 App 會有一瞬間的斷層。**換色票時這兩個值要跟著改。** -->
+    <color name="bg">#FFFFFF</color>
+    <!-- 圖示底色＝Palette.Surface。圖示本身是佔位的一顆點，
+         靠這個底色跟桌布分開。 -->
+    <color name="ic_launcher_bg">#FAFAFA</color>
 </resources>
