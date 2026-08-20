@@ -44,6 +44,17 @@ object InboxRepo {
     private val _saved = MutableStateFlow<Map<String, String>>(emptyMap())
     val saved: StateFlow<Map<String, String>> = _saved.asStateFlow()
 
+    /**
+     * 已經下載好、等著被安裝的 APK（file_id）。
+     *
+     * 跟 [saved] 分開而不是共用：一般檔案存進「下載」資料夾就結束了，
+     * APK 存下來只是中途站——按鈕要從「下載」變成「安裝」，那是另一種狀態。
+     * 而且這個狀態在重開 App 之後還原得回來（[ApkUpdate.stagedIds] 掃磁碟），
+     * [saved] 刻意不還原。
+     */
+    private val _staged = MutableStateFlow<Set<String>>(emptySet())
+    val staged: StateFlow<Set<String>> = _staged.asStateFlow()
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
@@ -83,6 +94,55 @@ object InboxRepo {
         scope.launch { download(app, client, file) }
     }
 
+    /** App 啟動時掃一次暫存目錄，把「已經備好的更新」還原回來。 */
+    fun restoreStaged(ctx: Context) {
+        val app = ctx.applicationContext
+        scope.launch { _staged.value = ApkUpdate.stagedIds(app) }
+    }
+
+    /**
+     * 助理傳了東西過來。**只有 APK 會被自動抓下來**，而且只在 Wi-Fi 下。
+     *
+     * 一般檔案維持手動：256MB 上限，替使用者決定用掉行動網路不是幫忙。
+     * APK 例外的理由是它不是「一個檔案」而是「一次更新」——使用者拿到它唯一
+     * 會做的事就是安裝，先備好只是把等待時間挪到他還沒注意的時候。
+     */
+    fun onOffer(ctx: Context, client: ButlerClient, file: OfferedFile) {
+        if (!ApkUpdate.isApk(file.name)) return
+        val app = ctx.applicationContext
+        // 已經備好就只是把狀態補上（例如 App 重開之後又收到同一則）
+        if (ApkUpdate.staged(app, file.id) != null) {
+            _staged.update { it + file.id }
+            return
+        }
+        if (!ApkUpdate.onWifi(app)) return
+        startDownload(app, client, file)
+    }
+
+    /**
+     * 把系統的安裝畫面叫出來。前提是這支 APK 已經下載好（[staged] 裡有它）。
+     *
+     * 權限沒開就直接帶去設定頁：那個開關一個 App 只要開一次，但沒開的話送出
+     * 安裝 Intent 只會得到一個看起來像壞掉的空白結果。
+     */
+    fun install(ctx: Context, fileId: String) {
+        val app = ctx.applicationContext
+        val apk = ApkUpdate.staged(app, fileId)
+        if (apk == null) {
+            // 檔案被系統清掉了（cacheDir 本來就會被清）。狀態退回去，讓他重抓
+            _staged.update { it - fileId }
+            _error.value = "更新檔被系統清掉了，再按一次下載"
+            return
+        }
+        if (!ApkUpdate.allowed(app)) {
+            _error.value = "系統要你先允許這個 App 安裝應用程式。開完回來再按一次安裝。"
+            runCatching { ApkUpdate.openPermissionSettings(app) }
+            return
+        }
+        runCatching { ApkUpdate.install(app, apk) }
+            .onFailure { _error.value = "叫不出安裝畫面：${it.message ?: "未知原因"}" }
+    }
+
     suspend fun refresh(client: ButlerClient) = lock.withLock {
         client.listOfferedFiles()
             .onSuccess {
@@ -110,17 +170,20 @@ object InboxRepo {
     ): Boolean {
         // 進來時 file.id 已經在 _downloading 裡了（由 startDownload 原子地放進去），
         // 這裡只負責收尾把它拿掉。
+        val apk = ApkUpdate.isApk(file.name)
         val result = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                saveViaMediaStore(ctx, client, file)
-            } else {
-                saveToAppDir(ctx, client, file)
+            when {
+                apk -> stageApk(ctx, client, file)
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                    saveViaMediaStore(ctx, client, file)
+                else -> saveToAppDir(ctx, client, file)
             }
         }
         _downloading.update { it - file.id }
         return result.fold(
             onSuccess = { where ->
-                _saved.update { it + (file.id to where) }
+                if (apk) _staged.update { it + file.id }
+                else _saved.update { it + (file.id to where) }
                 true
             },
             onFailure = { e ->
@@ -131,6 +194,27 @@ object InboxRepo {
                 false
             },
         )
+    }
+
+    /**
+     * APK 走自己的路：存進 App 的暫存區，不進公用「下載」目錄。理由見 [ApkUpdate]。
+     *
+     * 半截檔一定要刪掉。留著的話 [ApkUpdate.staged] 會以為它備好了，
+     * 按下安裝只會得到系統一句「無法剖析套件」——那看起來像編壞了，不像沒下載完。
+     */
+    private suspend fun stageApk(
+        ctx: Context, client: ButlerClient, file: OfferedFile,
+    ): String {
+        val target = ApkUpdate.target(ctx, file.id)
+        try {
+            target.outputStream().use { out ->
+                client.downloadOfferedFile(file.id, out).getOrThrow()
+            }
+        } catch (e: Throwable) {
+            target.delete()
+            throw e
+        }
+        return target.name
     }
 
     /**

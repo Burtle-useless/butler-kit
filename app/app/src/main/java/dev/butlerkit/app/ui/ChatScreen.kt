@@ -92,6 +92,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.butlerkit.app.data.ApkUpdate
 import dev.butlerkit.app.data.InboxRepo
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.text.KeyboardActions
@@ -1449,7 +1450,11 @@ private fun FileOfferCard(item: TraceItem.FileOffer, client: ButlerClient) {
     val downloading by InboxRepo.downloading.collectAsState()
     val savedMap by InboxRepo.saved.collectAsState()
     val saving = item.fileId in downloading
+    val stagedSet by InboxRepo.staged.collectAsState()
     val savedAt = savedMap[item.fileId]
+    // 傳來的是新版 App。這張卡就在對話裡，不必再跑一趟工具頁
+    val isApk = ApkUpdate.isApk(item.name)
+    val ready = isApk && item.fileId in stagedSet
 
     if (item.previewable) {
         LaunchedEffect(item.fileId) {
@@ -1529,7 +1534,12 @@ private fun FileOfferCard(item: TraceItem.FileOffer, client: ButlerClient) {
         }
 
         Text(
-            if (savedAt != null) "已存到 $savedAt" else if (saving) "存檔中…" else "存到手機",
+            when {
+                ready -> "安裝這個更新"
+                savedAt != null -> "已存到 $savedAt"
+                saving -> if (isApk) "下載中…" else "存檔中…"
+                else -> "存到手機"
+            },
             color = if (savedAt != null) Palette.Ok else Palette.Accent,
             fontSize = Type.Body,
             fontWeight = FontWeight.Medium,
@@ -1539,16 +1549,20 @@ private fun FileOfferCard(item: TraceItem.FileOffer, client: ButlerClient) {
                 // clip 在 clickable 之前，水波紋才會跟著圓角走
                 .clip(Radii.Field)
                 .background(Palette.SurfaceHi)
-                .clickable(enabled = !saving && savedAt == null) {
-                    // gone 這裡填 false：清單端點才算得出這個旗標，而下載
-                    // 失敗本來就會走 InboxRepo 的錯誤流程，不必先問一次
-                    InboxRepo.startDownload(
-                        ctx, client,
-                        OfferedFile(
-                            id = item.fileId, name = item.name, bytes = item.bytes,
-                            note = item.note, at = "", gone = false,
-                        ),
-                    )
+                .clickable(enabled = !saving && (ready || savedAt == null)) {
+                    if (ready) {
+                        InboxRepo.install(ctx, item.fileId)
+                    } else {
+                        // gone 這裡填 false：清單端點才算得出這個旗標，而下載
+                        // 失敗本來就會走 InboxRepo 的錯誤流程，不必先問一次
+                        InboxRepo.startDownload(
+                            ctx, client,
+                            OfferedFile(
+                                id = item.fileId, name = item.name, bytes = item.bytes,
+                                note = item.note, at = "", gone = false,
+                            ),
+                        )
+                    }
                 }
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         )

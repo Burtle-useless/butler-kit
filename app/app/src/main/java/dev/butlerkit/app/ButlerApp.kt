@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import dev.butlerkit.app.data.InboxRepo
 import dev.butlerkit.app.data.Prefs
 import dev.butlerkit.app.notify.AppForeground
 import dev.butlerkit.app.notify.ButlerService
@@ -27,6 +28,9 @@ class ButlerApp : Application() {
         // 兩支都是冪等的（unique work 用 KEEP、alarm 用同一個 requestCode 覆蓋）
         UsageWorker.schedule(this)
         WidgetTick.reschedule(this)
+        // 上次沒裝完的更新還在暫存區的話，把「已經備好」這件事撿回來——
+        // 不撿的話清單上那一列會退回「下載」，同一支 APK 又抓一次
+        InboxRepo.restoreStaged(this)
 
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {

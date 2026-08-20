@@ -226,6 +226,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 pendingOffers += from to offer
                 if (busyByConv[from] != true) flushOffers()
                 viewModelScope.launch { InboxRepo.refresh(client) }
+                // 傳來的是新版 App 的話，Wi-Fi 下先抓好，卡片上的按鈕直接是「安裝」。
+                // at 與 gone 由清單端點才算得出來，這裡填空值不影響下載
+                InboxRepo.onOffer(
+                    getApplication(), client,
+                    dev.butlerkit.app.net.OfferedFile(
+                        id = offer.fileId, name = offer.name, bytes = offer.bytes,
+                        note = offer.note, at = "", gone = false,
+                    ),
+                )
             }
 
             // 助理要知道他人在哪。**完全靜默**：不進軌跡、不提示，抓完就回報——

@@ -47,6 +47,12 @@
     <!-- 面對面翻譯要聽麥克風 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- 更新自己。這個 App 不上架，新版只能側載，而「下載完自己去檔案管理器找」
+         中間有三步都在 App 外面。有了它就能在下載完直接把系統的安裝畫面叫出來。
+         宣告了不代表能裝——使用者還要在設定裡對這個 App 開一次「允許安裝未知應用程式」，
+         那是一次性的，程式端用 canRequestPackageInstalls() 判斷並引導。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- Android 11 起的 package visibility：沒有這兩個 queries，
          SpeechRecognizer.isRecognitionAvailable() 與 TextToSpeech 都會找不到系統服務，
          而且是**靜默**失敗（回 false／init 失敗），不會有任何錯誤訊息。 -->
@@ -189,5 +195,19 @@
         <receiver
             android:name=".widget.WidgetTickReceiver"
             android:exported="false" />
+
+        <!-- 更新用的 APK 存在 cacheDir，套件安裝器讀不到 App 的私有目錄，
+             要靠這個把檔案換成 content:// 再臨時授權（見 ApkUpdate.install）。
+             Android 7 起直接遞 file:// 給別的 App 會拋 FileUriExposedException。
+             grantUriPermissions 一定要開，否則授權旗標無效。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

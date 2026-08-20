@@ -213,6 +213,16 @@ class ButlerService : Service() {
                                         ev.convId,
                                     )
                                     InboxRepo.refresh(client)
+                                    // 例外是 APK：那不是「一個檔案」是「一次更新」，
+                                    // Wi-Fi 下先抓好，等他打開 App 就只剩按一下安裝
+                                    InboxRepo.onOffer(
+                                        applicationContext, client,
+                                        dev.butlerkit.app.net.OfferedFile(
+                                            id = ev.str("file_id"), name = name,
+                                            bytes = ev.int("bytes").toLong(),
+                                            note = ev.str("note"), at = "", gone = false,
+                                        ),
+                                    )
                                 }
                                 // 助理要知道他在哪。不顯示任何東西，抓完就回報。
                                 // **一定要 launch 出去**：抓位置最多等 15 秒，

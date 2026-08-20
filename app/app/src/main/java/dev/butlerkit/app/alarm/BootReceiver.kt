@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import dev.butlerkit.app.data.ApkUpdate
 import dev.butlerkit.app.data.Prefs
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.parseAgenda
@@ -22,6 +23,10 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
             intent.action != Intent.ACTION_MY_PACKAGE_REPLACED
         ) return
+        // 剛被更新過：暫存區那支安裝檔已經沒有用了（系統早就把程式複製進 /data/app），
+        // 留著就是白佔幾十 MB。**只在更新後清，開機時不清**——開機時如果有下載好
+        // 但還沒裝的更新，清掉等於要他再抓一次
+        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) ApkUpdate.clear(ctx)
         // 排程 id 是上一世代的，開機後那些 PendingIntent 早就不存在了；
         // 清掉才不會讓 sync 去取消一堆不存在的東西
         Prefs(ctx).scheduledIds = emptySet()
