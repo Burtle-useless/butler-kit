@@ -659,17 +659,19 @@ private fun ChatBody(
                 verticalArrangement = Arrangement.Center,
             ) {
                 PetFace(state.pet, 120.dp)
-                Text(
-                    // 連不上時印真正的原因。頂欄那行紅字是 maxLines=1，長訊息的尾巴
-                    // 會被截掉（明文被擋時最關鍵的那半句正好在後面），這裡有整片空間。
-                    // 原本寫死「Tailscale 開了沒？」——連不上的原因不只一種，
-                    // 照著那句去查 Tailscale 會走一段冤枉路。
-                    if (!state.connected) "……" + (state.connError ?: "連不上電腦。Tailscale 開了沒？")
-                    else "有事就說。",
-                    color = Palette.TextDim, fontSize = Type.Body,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 16.dp, start = Space.Screen, end = Space.Screen),
-                )
+                // 連得上就不寫字，空畫面上一顆吉祥物就夠了。
+                // 連不上才印，而且印真正的原因：頂欄那行紅字是 maxLines=1，長訊息的
+                // 尾巴會被截掉（明文被擋時最關鍵的那半句正好在後面），這裡有整片空間。
+                // 別寫死「Tailscale 開了沒？」——連不上的原因不只一種，照著那句去查
+                // Tailscale 會走一段冤枉路。
+                if (!state.connected) {
+                    Text(
+                        "……" + (state.connError ?: "連不上電腦。Tailscale 開了沒？"),
+                        color = Palette.TextDim, fontSize = Type.Body,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 16.dp, start = Space.Screen, end = Space.Screen),
+                    )
+                }
             }
         } else {
             // 最新一則回覆旁的桌寵是「活的」（跟著實際狀態變表情），
