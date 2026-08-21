@@ -12,6 +12,7 @@ from pathlib import Path
 
 import config  # noqa: F401
 from engine import fold as fold_mod
+from engine import history as history_mod
 from engine import turn as turn_mod
 from engine.errors import CCError
 from engine.fold import NO_RESPONSE
@@ -115,6 +116,38 @@ async def test_empty_three_layers() -> None:
     reply = fe.replies()[0] if fe.replies() else ""
     check("兜底用了最長的那份思考，沒被後續空值洗掉",
           "第一輪的完整思考內容" in reply, reply[:60])
+
+
+async def test_time_stamp() -> None:
+    """訊息時間戳：蓋得上、剝得掉、不亂蓋。
+
+    這條測試橫跨 turn 與 history 兩個模組是刻意的——蓋章與剝除是同一個機制的
+    兩端，格式只要有一邊改了另一邊沒跟上，症狀是使用者的每一則訊息在重開 App
+    之後**開頭多出一串他自己沒打過的時間**，而伺服器端一切正常、沒有任何錯誤。
+    這種靜默失敗只能靠往返測試擋。
+    """
+    print("\n[訊息時間戳]")
+    s = Scripted([
+        TurnResult(reply="我先讀了檔案", used_tool=True, done=False, wait=False),
+        TurnResult(reply="改完了", used_tool=True, done=True),
+    ])
+    install(s)
+    fe = FakeFrontend()
+    await turn_mod.handle_turn("改檔案", make_state(), fe)
+
+    first = s.prompts[0]
+    check("使用者訊息蓋上時間戳", history_mod._STAMP_RE.match(first) is not None, first)
+    check("原文完整留在後面", first.endswith("改檔案"), first)
+    check("剝回來等於原文",
+          history_mod._STAMP_RE.sub("", first, count=1) == "改檔案", first)
+    # 續跑提示是同一則訊息的內部往返，蓋上去等於在歷史裡憑空多出一個時間點
+    check("續跑提示不蓋", history_mod._STAMP_RE.match(s.prompts[1]) is None,
+          s.prompts[1])
+
+    # 沒蓋過章的舊訊息、以及他自己用中括號開頭寫的話，都不能被吃掉
+    for raw in ("這是舊訊息", "[我自己打的] 幫我看一下"):
+        check(f"不誤剝：{raw}",
+              history_mod._STAMP_RE.sub("", raw, count=1) == raw)
 
 
 async def test_auto_continue() -> None:
@@ -396,7 +429,9 @@ async def test_compact_is_silent() -> None:
 
     deltas = [e.data.get("d") for e in fe.events if e.type == "text.delta"]
     check("壓縮那輪的字沒進畫面", "壓縮摘要" not in deltas, str(deltas))
-    check("正事那輪的字照送", "辦正事" in deltas, str(deltas))
+    # 用子字串比對而不是整串相等：使用者訊息送進模型前會被蓋上時間戳
+    # （turn._stamp），回聲出來的 delta 是「[08/21 週五 11:30] 辦正事」
+    check("正事那輪的字照送", any("辦正事" in d for d in deltas), str(deltas))
     check("摘要沒被當成回覆", fe.replies() == ["正事做完"], str(fe.replies()))
     # 全靜音會讓畫面十幾秒沒動靜，所以 status 仍要放行
     notes = [e.data.get("note", "") for e in fe.events if e.type == "status"]
@@ -580,6 +615,7 @@ async def _boom(prompt, state, frontend, turn_id, expect_assistant=True):
 async def main() -> int:
     await test_normal()
     await test_empty_three_layers()
+    await test_time_stamp()
     await test_auto_continue()
     await test_done_stops()
     await test_ask_inline()

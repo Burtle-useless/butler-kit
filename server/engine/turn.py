@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 import config
@@ -79,6 +80,29 @@ COMPACT_RECHECK_NUDGE = (
     "有漏掉的現在補上（只補漏掉的那句，不要把已經講過的重講一遍）；"
     "全部都交代過了就只回 [[DONE]]。"
 )
+
+# 星期的中文寫法，`_stamp` 用。`weekday()` 是 0=週一。
+_WEEKDAYS: tuple[str, ...] = ("一", "二", "三", "四", "五", "六", "日")
+
+
+def _stamp(text: str) -> str:
+    """在使用者訊息前面加上送出時間，格式 `[08/21 週四 11:04] `。
+
+    模型手上唯一的時間資訊是 CLI system prompt 那句「今天是幾月幾號」，而對話裡
+    每一則訊息都沒有時間。它看得到前面說過什麼，卻完全不知道那是十分鐘前還是
+    三天前——這條對話又是持續的、跨好幾天的，於是它只能猜，猜出來的就是
+    「我昨天講錯的一件事」，而那其實是同一天稍早。使用者 2026-08-21 回報
+    「他經常會說昨天，但明明只是上一波對話而已」。壓縮過後更嚴重：摘要裡連
+    日期痕跡都不剩。
+
+    加星期是因為 system prompt 只給日期不給星期，模型連今天禮拜幾都不知道，
+    而「下週三」這種話每天都在講。
+
+    這個前綴**不會被使用者看到**：手機端即時顯示的是他自己打的原文（App 送出時
+    就畫上去了），重建歷史時 `history._STAMP_RE` 會把它剝掉。
+    """
+    now = datetime.now()
+    return f"[{now:%m/%d} 週{_WEEKDAYS[now.weekday()]} {now:%H:%M}] {text}"
 
 
 def ctx_limit(state: ConvState) -> int:
@@ -229,7 +253,9 @@ async def handle_turn(text: str, state: ConvState, frontend: Frontend) -> None:
     started = time.monotonic()
     try:
         await _maybe_compact(state, frontend, conv)
-        await _run_with_recovery(text, state, frontend, conv, out)
+        # 只有真的使用者訊息蓋時間戳。續跑與重試的提示走別的路徑進來，
+        # 那些是同一則訊息的內部往返，蓋上去只會讓歷史多出幾個假的時間點
+        await _run_with_recovery(_stamp(text), state, frontend, conv, out)
     except CCError as e:
         # 出錯有自己的推播（error 事件 →「出狀況了」），不要再補一則「做完了」
         await _handle_error(e, state, frontend, conv)

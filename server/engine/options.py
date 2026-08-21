@@ -133,6 +133,24 @@ _RULE_KANBAN = (
     "不要自己刪卡片，要拿掉他會自己在 App 上封存。"
 )
 
+# 8. 時間感。搭配 turn._stamp 蓋在每則使用者訊息前面的時間戳一起用。
+#
+# 模型手上只有 CLI system prompt 那句「今天幾號」，對話裡每一則訊息都沒有時間，
+# 於是「隔了多久」全靠感覺編。實際症狀是它把同一天早上講過的事說成「我昨天說的」。
+#
+# 時間戳治得了新訊息，治不了已經存在的舊訊息（那些永遠不會有前綴），
+# 所以規則要一起下：算不出來就不要講得像算得出來。
+#
+# 這條兩份 append 都要有——前綴是伺服器蓋的，不解釋的話模型會把它當成
+# 使用者打的字複誦出來。
+_RULE_TIME = (
+    "每則使用者訊息前面的方括號時間，例如 [08/21 週四 11:04]，"
+    "是那則訊息送出的時間，系統加的，他自己看不到。"
+    "要講時間就照這個算，不要複誦它、不要在自己的回覆裡模仿這個格式。"
+    "沒有這個時間的舊訊息就是算不出來，這種時候不要說昨天、上次、前幾天這種話，"
+    "改說前面、稍早、剛才。寧可講得模糊，也不要講一個聽起來精確但其實是猜的時間。"
+)
+
 
 def _amnesia_rule() -> str:
     """失憶自救。沒設 BUTLER_NOTES_FILE 就整條不加。
@@ -162,7 +180,7 @@ def _amnesia_rule() -> str:
 
 # 助理對話：人格 + 全部核心規則。
 SYSTEM_APPEND = (
-    persona.load(config.PERSONA) + _amnesia_rule()
+    persona.load(config.PERSONA) + _amnesia_rule() + _RULE_TIME
     + _RULE_AGENDA + _RULE_KANBAN + _RULE_SENDFILE + _RULE_WHERE
     + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
 )
@@ -177,7 +195,7 @@ SYSTEM_APPEND = (
 # 工作對話開著只會讓模型在「幫我記一下這個 bug」的時候把東西寫進記帳本。
 # 其餘一律交還給 Claude Code 的預設行為，這才是「純工作」該有的樣子。
 WORK_APPEND = (
-    persona.load(config.WORK_PERSONA)
+    persona.load(config.WORK_PERSONA) + _RULE_TIME
     + _RULE_SENDFILE + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
 )
 

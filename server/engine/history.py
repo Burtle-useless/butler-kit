@@ -8,6 +8,7 @@ App 冷啟動、重裝、切對話時沒有事件可看，畫面就是空的。
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
@@ -38,6 +39,16 @@ _OPS_PREFIXES: Final[tuple[str, ...]] = (
     "<system-reminder>",
     "[Image: original ",              # 讀圖後回填的尺寸換算註記
     "This session is being continued from a previous conversation",
+)
+
+# 送進模型前蓋在使用者訊息前面的時間戳（見 turn._stamp）。那是給模型算時間用的，
+# 不是他打的字，畫回氣泡之前要剝掉——不剝的話每一則訊息開頭都會多出一串
+# 他自己沒寫過的 `[08/21 週四 11:04]`，而且只在重開 App 之後才出現。
+#
+# 格式對不上就整串留著：寧可漏剝一則，也不要拿一個寬鬆的正則去吃掉使用者
+# 真的用中括號開頭寫的話。
+_STAMP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\d{2}/\d{2} 週[一二三四五六日] \d{2}:\d{2}\] "
 )
 
 
@@ -178,6 +189,8 @@ def load_history(conv_id: str, limit: int = 60, head: int = 0) -> list[dict]:
                 if role == "user" and text.startswith(_OPS_PREFIXES):
                     # 維運注入（續跑提示等）不算新回合，累積中的思考要留給真正的回覆
                     continue
+                if role == "user":
+                    text = _STAMP_RE.sub("", text, count=1)
                 at = _at_ms(r)
                 if at is None:
                     at = last_ms
