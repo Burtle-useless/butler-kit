@@ -362,8 +362,8 @@ private fun SetupScreen(prefs: Prefs, onDone: () -> Unit) {
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                "host 填電腦的 Tailscale 位址加 port；token 在電腦端啟動日誌那行 " +
-                    "\"device token:\" 後面。",
+                "host 填連得到電腦的位址加 port（Tailscale 主機名、通道網址都行）；" +
+                    "token 在電腦端啟動日誌那行 \"device token:\" 後面。",
                 color = Palette.TextDim, fontSize = Type.Meta, lineHeight = Type.MetaLine,
             )
             OutlinedTextField(

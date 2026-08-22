@@ -38,18 +38,19 @@ fun humanError(t: Throwable?, httpCode: Int? = null): String {
         // （例如伺服器回的中文 detail 帶了數字）就會誤報「配對失效」，
         // 而那句話會讓人跑去重新配對，把好好的裝置解掉。
         httpCode == 401 || httpCode == 403 -> "配對失效了，要重新配對一次。"
-        // host 填了 IP（或任何非 ts.net 的位址）就會走到這裡：明文白名單是編譯期
-        // 資源、只放行 ts.net，Android 直接把連線擋掉。原本沒有這條，訊息落到最後
-        // 的 else 顯示英文原文 `CLEARTEXT communication to … not permitted by
-        // network security policy`，而頂欄那行 maxLines=1，尾巴看不到；空對話畫面
-        // 又寫死「Tailscale 開了沒？」——人會去查 Tailscale，但那跟這件事無關。
+        // host 填了明文 http 位址（IP、區網主機名）就會走到這裡：明文白名單是
+        // 編譯期資源、預設只放行 ts.net，Android 直接把連線擋掉。原本沒有這條，
+        // 訊息落到最後的 else 顯示英文原文 `CLEARTEXT communication to … not
+        // permitted by network security policy`，而頂欄那行 maxLines=1，尾巴看不到。
+        // 這句**不要指名 Tailscale**：走通道的人填的是 https 網址，根本碰不到
+        // 這條路；會撞上的是自己接區網 http 的人，要的是「怎麼放行」而不是「裝 VPN」。
         m.contains("cleartext", ignoreCase = true) ->
-            "這個位址不能走明文連線。host 要填 Tailscale 的 ts.net 主機名，填 IP 會被 Android 擋掉。"
+            "這個位址不能走明文連線。改用 https 網址，或把它加進 network_security_config.xml 的白名單。"
         t is java.net.UnknownHostException -> "找不到電腦的位址，去設定確認主機那一欄。"
         t is java.net.SocketTimeoutException || "ETIMEDOUT" in m || "timeout" in m ->
             "電腦沒回應，它可能睡著了。"
         "Failed to connect" in m || "ECONNREFUSED" in m || "Connection refused" in m ->
-            "連不上電腦。確認它開著、而且 Tailscale 有連線。"
+            "連不上電腦。確認它開著、服務在跑、連線通道也還在。"
         "Software caused connection abort" in m || "Connection reset" in m ->
             "連線被中斷了。"
         httpCode != null && httpCode >= 500 -> "電腦那邊出錯了（$httpCode）。"

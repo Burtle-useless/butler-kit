@@ -43,13 +43,38 @@ XML 的 `domain-config` 區塊裡加：
 <domain includeSubdomains="false">192.168.1.100</domain>
 ```
 
-然後重編。另外 server 預設拒絕在非 tailnet 位址啟動——
-`config.resolve_bind_host()` 會擋，那條是刻意的安全地基，要改請先讀懂它為什麼在那裡。
+然後重編。server 那邊設 `BUTLER_BIND=192.168.1.100`——預設會去找 tailnet 位址，
+沒設就起不來。啟動時它會警告一句「同網段的裝置都連得到」，那句是對的，不是誤報。
+
+**Cloudflare Tunnel（有自己的網域就走這條）**
+
+Android 這端什麼都不用改，走 https 不碰白名單，**不必重編 APK**。
+
+1. `cloudflared tunnel run <名字>`，`ingress` 指向 `http://127.0.0.1:47362`
+2. server 設 `BUTLER_BIND=127.0.0.1`
+3. App 的 host 填那個網域（443 可省略）
+
+服務只綁本機，cloudflared 從 loopback 取件，連同一個區網的其他裝置都掃不到——
+比綁 tailnet 位址更緊。但通道的入口在公開網際網路上，**一定要在通道那層加驗證**
+（Cloudflare Access service token 之類），別只靠 device token。
 
 **正式 HTTPS**
 
 整個 `domain-config` 區塊刪掉即可。`base-config` 本來就信任系統憑證，
 走 https 不需要任何白名單。
+
+## server 綁哪裡
+
+`config.resolve_bind_host()` 決定，優先序：
+
+1. `BUTLER_DEV=1` → 強制 `127.0.0.1`（本機驗證用，手機連不到）
+2. `BUTLER_BIND=<位址>` → 照它走，**不再回頭找 tailnet**
+   （tunnel + Tailscale 並存時要的就是這個）
+3. 都沒設 → 自動找 tailnet 位址，找不到就拒絕啟動
+
+**`BUTLER_BIND` 不接受 `0.0.0.0` 這類萬用位址，設了直接拒絕啟動。** 引擎跑在
+bypassPermissions 底下，打得到這個 port 就等於能對那台電腦下任意指令，
+在公用 Wi-Fi 上等於把電腦交出去。要從外面連進來請走通道。
 
 ## 手機深度省電會斷線
 

@@ -206,6 +206,9 @@ class Prefs(context: Context) {
          * 用 Tailscale 的話建議填 MagicDNS 名稱（`your-pc.tailXXXX.ts.net:47362`）
          * 而不是 IP：位址會變，名字不會，而 network_security_config 的白名單
          * 是編譯期資源，改一次就要重編一次 APK。
+         *
+         * 走 Cloudflare Tunnel 之類的通道就填那個 https 網址（`butler.example.com`，
+         * 443 可省略）。那條路不碰明文白名單，什麼都不必改。
          */
         const val DEFAULT_HOST = ""
     }

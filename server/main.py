@@ -49,7 +49,9 @@ def _wait_for_tailnet(max_wait: int = 90) -> str | None:
 
 def main() -> int:
     print(config.startup_banner(), flush=True)
-    if not config.DEV_MODE and config.find_tailnet_ip() is None:
+    # 只有真的要靠 tailnet 位址才需要等。設了 BUTLER_BIND 的人不走這條，
+    # 沒排除的話開機自啟會白等 90 秒才起來。
+    if not config.DEV_MODE and not config.BIND_HOST and config.find_tailnet_ip() is None:
         _wait_for_tailnet()
     try:
         host = config.resolve_bind_host()
@@ -74,8 +76,14 @@ def main() -> int:
     else:
         print(f"[butler] 已註冊 {device_count()} 台裝置"
               f"{'（使用 BUTLER_TOKEN 環境變數）' if token else ''}", flush=True)
-    if host.startswith("127."):
+    if config.DEV_MODE:
         print("[butler] 開發模式（BUTLER_DEV=1），只綁 loopback，手機連不到。", flush=True)
+    elif host.startswith("127."):
+        # 走通道的正常組合，不是誤設——但手機直連一定失敗，先講清楚少一輪誤判
+        print("[butler] 只綁 loopback，手機要透過通道連進來（直連不會通）。", flush=True)
+    elif config.BIND_HOST and config.is_lan_bind(host):
+        print(f"[butler] 注意：{host} 不是 tailnet 位址，同網段的裝置都連得到這個服務。",
+              flush=True)
 
     uvicorn.run(
         "transport.app:app",

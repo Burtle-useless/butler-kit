@@ -56,7 +56,8 @@ python main.py
 
 | 症狀 | 原因 | 處理 |
 |---|---|---|
-| `找不到 Tailscale 位址…拒絕啟動` | 沒裝 Tailscale 或沒登入 | 見步驟二，或先用 `BUTLER_DEV=1` 綁 loopback 驗證服務本身 |
+| `找不到 Tailscale 位址…拒絕啟動` | 沒裝 Tailscale 或沒登入 | 見步驟二。走通道的話設 `BUTLER_BIND=127.0.0.1`；只想驗服務本身用 `BUTLER_DEV=1` |
+| `BUTLER_BIND=… 是萬用位址，拒絕啟動` | 設了 `0.0.0.0` 之類 | 見下面那條紅線，改綁 `127.0.0.1` 走通道 |
 | `已被佔用` | 另一個實例還在跑 | 關掉它，或設 `BUTLER_PORT` |
 | 卡住 60 秒後 `Control request timeout: initialize` | system prompt append 裡有換行符 | 見下面「人格」那節 |
 
@@ -64,7 +65,8 @@ python main.py
 
 ```
 BUTLER_PORT=47362           # 監聽埠
-BUTLER_DEV=1                # 允許綁 127.0.0.1，只在本機驗證時用
+BUTLER_BIND=127.0.0.1       # 監聽位址。留空＝自動找 Tailscale 位址；走通道就填這個
+BUTLER_DEV=1                # 強制綁 127.0.0.1，只在本機驗證時用
 BUTLER_CWD=C:\path\to\work  # Claude Code 的預設工作目錄，預設是家目錄
 BUTLER_PERSONA=default      # 人格檔名，對應 server/personas/<名字>.txt
 BUTLER_NOTES_FILE=...       # 「失憶自救」要讀的筆記檔，留空＝關掉這條規則
@@ -84,14 +86,29 @@ DEFAULT_MODEL=claude-sonnet-4-6
 卡住的一點——選錯了要重編 APK。
 
 預設值是 Tailscale：白名單只寫 `ts.net`（`includeSubdomains=true`），
-所以位址怎麼變都不必重編。**除非使用者有特殊理由，就照這個走**：
+所以位址怎麼變都不必重編。**沒有特別想法就照這個走**：
 
 1. 電腦與手機都裝 Tailscale，登入同一個帳號
 2. 電腦端開 MagicDNS，記下主機名（像 `desktop-abc.tailXXXX.ts.net`）
 3. App 的 host 填 `那個主機名:47362`
 
+**已經有網域的話走通道更省事**（Cloudflare Tunnel、ngrok 之類）：那是 https，
+根本碰不到明文白名單，**不用重編 APK**，手機端也不必裝 VPN。
+
+1. 通道工具跑起來，指向 `http://127.0.0.1:47362`
+2. server 設 `BUTLER_BIND=127.0.0.1`（它就不會去找 Tailscale 了）
+3. App 的 host 填那個 https 網域
+
+這樣服務只綁本機，連同一個區網的其他裝置都掃不到，比綁 tailnet 位址更緊。
+代價是通道的入口是公開的——**務必在通道那層加驗證**（Cloudflare Access 之類），
+不要只靠 device token。
+
 其他選法與各自的代價寫在 `docs/transport.md`。要改成區網明文，
-在那份 XML 裡加一筆 `<domain>` 再重編。
+在那份 XML 裡加一筆 `<domain>`、server 設 `BUTLER_BIND=<區網 IP>`，再重編。
+
+> **紅線：`BUTLER_BIND` 不接受 `0.0.0.0`，設了會直接拒絕啟動。** 引擎跑在
+> bypassPermissions 底下，打得到這個 port 就等於能對那台電腦下任意指令。
+> 要從外面連進來請走通道，不要直接對外開。
 
 ---
 

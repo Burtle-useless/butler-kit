@@ -72,8 +72,23 @@ PORT: Final[int] = int(os.environ.get("BUTLER_PORT") or 47362)
 # 開發旗標：**強制**綁 127.0.0.1。預設關閉，只在本機開發期手動開。
 DEV_MODE: Final[bool] = (os.environ.get("BUTLER_DEV") or "0").strip() == "1"
 
+# 明確指定監聽位址。留空＝自動找 tailnet 位址（預設，Tailscale 使用者不必設）。
+#
+# 存在的理由：Tailscale 只是**其中一種**把手機接進來的方式。走 Cloudflare Tunnel、
+# ngrok、或自己架反向代理的人，服務該綁的是 127.0.0.1（代理從本機取件，外面
+# 連同一個區網都掃不到這個 port）。寫死 tailnet 等於逼所有人裝 Tailscale。
+#
+# 這**不是**「綁哪裡都行」的開關：萬用位址一律拒絕，見 _check_bind。
+BIND_HOST: Final[str] = (os.environ.get("BUTLER_BIND") or "").strip()
+
 # Tailscale 用 CGNAT 網段 100.64.0.0/10 配發節點位址
 _TAILNET: Final[ipaddress.IPv4Network] = ipaddress.ip_network("100.64.0.0/10")
+
+# 萬用位址：綁上去等於對所有網路介面開放。引擎跑在 bypassPermissions 底下，
+# 在公用 Wi-Fi 上這等於把整台電腦交出去，所以不管誰設的都拒絕。
+_WILDCARD: Final[frozenset[str]] = frozenset({
+    "0.0.0.0", "0", "::", "[::]", "::0", "*",
+})
 
 
 def _probe_local_ips() -> list[str]:
@@ -118,29 +133,59 @@ def find_tailnet_ip() -> str | None:
     return None
 
 
+def _check_bind(host: str) -> str:
+    """檢查手動指定的綁定位址，不通過就 raise。
+
+    只擋萬用位址。區網位址（192.168.x.x 之類）放行但會在啟動時警告一句——
+    那是使用者明講的選擇，不是誤設，但值得讓他知道同網段的人都連得到。
+    """
+    if host.lower() in _WILDCARD:
+        raise RuntimeError(
+            f"BUTLER_BIND={host} 是萬用位址，拒絕啟動。\n"
+            "  → 引擎跑在 bypassPermissions 底下，打得到這個 port 就能對這台電腦\n"
+            "     下任意指令。要從外面連進來請走通道（Cloudflare Tunnel 之類）\n"
+            "     並把這裡設成 127.0.0.1，不要直接對外開。"
+        )
+    return host
+
+
+def is_lan_bind(host: str) -> bool:
+    """這個綁定位址會不會讓同網段的人連得到？只用來決定要不要印警告。"""
+    if host.startswith("127.") or host == "localhost":
+        return False
+    try:
+        return ipaddress.ip_address(host) not in _TAILNET
+    except ValueError:
+        return True    # 主機名解析不了就當成可能對外，寧可多警告一句
+
+
 def resolve_bind_host() -> str:
     """決定 uvicorn 綁定位址。
 
-    只回 tailnet 位址或（開發模式下的）loopback，**永遠不回 0.0.0.0**——
-    引擎跑在 bypassPermissions 底下，任何能打到這個 port 的人都能對這台電腦
-    下任意指令。綁 0.0.0.0 在公用 Wi-Fi 上等於把整台電腦交出去。
-    找不到 tailnet 位址就拒絕啟動，不做任何 fallback。
+    三條路，優先序由上而下：DEV_MODE → BUTLER_BIND → 自動找 tailnet。
+    **永遠不回萬用位址**——引擎跑在 bypassPermissions 底下，任何能打到這個 port
+    的人都能對這台電腦下任意指令。
 
-    DEV_MODE **優先於** tailnet，不是「找不到 tailnet 時的退路」。這個旗標的用途是
+    DEV_MODE **優先於**其餘兩者，不是「找不到 tailnet 時的退路」。這個旗標的用途是
     「隔離在本機驗證服務本身」，有裝 Tailscale 的人設了它卻照樣綁上 tailnet 的話，
     等於在不知情的狀況下把一個 bypassPermissions 的服務開給整個 tailnet 看得到。
-    文件、下面那句錯誤訊息、main.py 的 `not DEV_MODE and …` 都寫「只綁 127.0.0.1」，
-    行為要對得上。
+
+    BUTLER_BIND 設了就照它走，**不再回頭找 tailnet**：同時裝了 Tailscale 又指定
+    127.0.0.1 的人（走通道的常見組合）要的就是「不要綁上 tailnet」。
     """
     if DEV_MODE:
         return "127.0.0.1"
+    if BIND_HOST:
+        return _check_bind(BIND_HOST)
     ip = find_tailnet_ip()
     if ip:
         return ip
     raise RuntimeError(
         "找不到 Tailscale 位址（100.64.0.0/10），拒絕啟動。\n"
-        "  → 確認 Tailscale 已安裝並登入：tailscale status\n"
-        "  → 本機開發請設環境變數 BUTLER_DEV=1（只綁 127.0.0.1）"
+        "  → 用 Tailscale：確認它已安裝並登入（tailscale status）\n"
+        "  → 用 Cloudflare Tunnel 之類的通道：設 BUTLER_BIND=127.0.0.1\n"
+        "     （服務只綁本機，由通道從 loopback 取件送出去）\n"
+        "  → 本機開發：設 BUTLER_DEV=1（只綁 127.0.0.1，手機連不到）"
     )
 
 
