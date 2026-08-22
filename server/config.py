@@ -205,7 +205,8 @@ CLIENT_IDLE_TIMEOUT: Final[int] = 900                 # 閒置逾時：超過即
 INACTIVITY_TIMEOUT: Final[int] = 600                  # CC 連續無輸出超過此秒數才視為卡死
 MAX_EMPTY_RETRY: Final[int] = 3                       # 空回覆重試上限
 MAX_AUTO_CONTINUE: Final[int] = 2                     # 未打完成標記時的自動續跑上限
-NOTIFY_AFTER_SEC: Final[int] = 60                     # 超過此秒數的任務，完成時推播
+# 這裡原本有 NOTIFY_AFTER_SEC=60（「跑超過這麼久才推播」）。已移除：短回合正是
+# 人在外面最需要被通知的那種，而「該不該出聲」手機端判得更準。見 turn._turn_done。
 
 # ── 安全 ─────────────────────────────────────────────────────────────────────
 # 破壞性指令確認：cc-bot 預設關（人坐在電腦前看得到螢幕），

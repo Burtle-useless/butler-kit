@@ -543,14 +543,15 @@ async def test_turn_done_timing() -> None:
           bool(dones) and isinstance(dones[0].data.get("elapsed_ms"), int))
     check("動過工具就值得推播", bool(dones) and dones[0].data.get("notify") is True)
 
-    # 隨口聊兩句也推播會很煩。門檻只有伺服器這一份（config.NOTIFY_AFTER_SEC），
-    # 先前這個常數零使用端，60 是抄在 App 裡的
+    # 短回合也要推播。原本的門檻（動過工具，或跑超過 60 秒）會把「問一句路程
+    # 幾公里」這種二十秒答完的整個濾掉——而人在外面最需要被通知的正是那種。
+    # 該不該出聲改由手機端判：App 開著時背景服務是停的，這則事件沒人收。
     install(Scripted([TurnResult(reply="嗨", used_tool=False, done=True)]))
     fe_chat = FakeFrontend()
     await turn_mod.handle_turn("嗨", make_state(), fe_chat)
     chat_done = [e for e in fe_chat.events if e.type == "turn.done"]
-    check("沒動工具的短回合不推播",
-          bool(chat_done) and chat_done[0].data.get("notify") is False,
+    check("沒動工具的短回合照樣推播",
+          bool(chat_done) and chat_done[0].data.get("notify") is True,
           str(chat_done[0].data) if chat_done else "")
 
     # 停在提問上：手機端靠這個旗標避開「做完了」，那件事還沒做完
