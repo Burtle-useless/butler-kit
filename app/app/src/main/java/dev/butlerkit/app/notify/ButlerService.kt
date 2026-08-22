@@ -48,6 +48,9 @@ class ButlerService : Service() {
     private var job: Job? = null
     private var locJob: Job? = null
 
+    /** 助理傳檔案給你的時候那件事通常還沒做完，所以檔案通知要等收工。見 [FileNotifyGate]。 */
+    private val fileGate = FileNotifyGate()
+
     // 連線與定期回報共用同一份。ButlerClient 每個實例自己建兩個 OkHttpClient，
     // 各建一個等於多一組連線池與執行緒，而它們講的是同一台伺服器。
     private val prefs by lazy { Prefs(applicationContext) }
@@ -183,6 +186,10 @@ class ButlerService : Service() {
                             val ev = wire.event
                             prefs.bgSeq = ev.seq
                             when (ev.type) {
+                                "turn.start" ->
+                                    notifyFiles(ev.convId, fileGate.onTurnStart(ev.convId))
+                                // 心跳，只用來確認「還在跑」（見 FileNotifyGate.onRunning）
+                                "status" -> fileGate.onRunning(ev.convId)
                                 "ask.request" -> onAsk(ev)
                                 // 只認 turn.done，**不要**改回 reply.final：後者
                                 // 每一輪都會發（續跑、壓縮核對各一則），綁在那上面
@@ -202,15 +209,11 @@ class ButlerService : Service() {
                                 // 上限 256MB，替使用者決定用掉行動網路不是幫忙。
                                 "file.offer" -> {
                                     val name = ev.str("name")
-                                    // convId 一定要帶。通知 id 是 idOf(kind, convId)
-                                    // 算出來的，省略的話整類固定同一個 id，
-                                    // 助理連傳兩個檔案時後面那則會把前面那則**蓋掉**——
-                                    // 使用者只看得到最後一個，前一個檔案就這樣錯過。
-                                    Notifier.notify(
-                                        this@ButlerService, NotifyKind.FileReady,
-                                        "助理傳了 $name 給你",
-                                        ev.str("note").ifBlank { "在工具頁可以下載" },
-                                        ev.convId,
+                                    // 回合還在跑就先按住，等收工再一起發。清單更新
+                                    // 與預抓照做——那些是無聲的，該先準備好。
+                                    notifyFiles(
+                                        ev.convId, fileGate.onFile(ev.convId, name),
+                                        ev.str("note"),
                                     )
                                     InboxRepo.refresh(client)
                                     // 例外是 APK：那不是「一個檔案」是「一次更新」，
@@ -266,13 +269,44 @@ class ButlerService : Service() {
      *    只量得到最後一輪——跑了十分鐘的事只要最後一輪快就整個不推播。
      */
     private fun onTurnDone(ev: ServerEvent) {
+        val files = fileGate.onTurnEnd(ev.convId)
+        val body = ev.str("markdown").take(120).replace("\n", " ")
+        // 這一輪傳過檔案的話就只發那一則：它同時說明了「做完了」與「有東西可拿」。
+        // 兩則一起發不會更清楚，同一件事跳兩次通知只是吵。停在提問上也照發——
+        // 「助理在等你回答」講的是另一件事，而他往往得先看到檔案才答得出來。
+        if (files.isNotEmpty()) {
+            notifyFiles(ev.convId, files, body)
+            return
+        }
         if (ev.bool("pending_ask")) return
         if (!ev.bool("notify")) return
-        val body = ev.str("markdown").take(120).replace("\n", " ")
         Notifier.notify(this, NotifyKind.TaskDone, "做完了", body, ev.convId)
     }
 
+    /**
+     * 「助理傳了檔案給你」。
+     *
+     * convId 一定要帶：通知 id 是 `idOf(kind, convId)` 算出來的，省略的話整類固定
+     * 同一個 id，不同對話的檔案通知會互相蓋掉。同一輪的多個檔案刻意併成一則——
+     * 它們本來就屬於同一件事，而且分開發也一樣會互蓋（同種類同對話就是同一個 id），
+     * 使用者只會看到最後一個，前面的檔案就這樣錯過。
+     */
+    private fun notifyFiles(conv: String, names: List<String>, note: String = "") {
+        if (names.isEmpty()) return
+        val title = if (names.size == 1) {
+            "助理傳了 ${names[0]} 給你"
+        } else {
+            "助理傳了 ${names.size} 個檔案給你"
+        }
+        val body = note.ifBlank {
+            if (names.size == 1) "在工具頁可以下載" else names.joinToString("、")
+        }
+        Notifier.notify(this, NotifyKind.FileReady, title, body, conv)
+    }
+
     private fun onError(ev: ServerEvent) {
+        // 出錯的回合不發 turn.done（伺服器刻意的），按住的檔案要在這裡放掉
+        notifyFiles(ev.convId, fileGate.onTurnEnd(ev.convId))
         val kind = ev.str("kind")
         if (kind == "STOPPED") return       // 自己按的停止，不用通知
         Notifier.notify(
