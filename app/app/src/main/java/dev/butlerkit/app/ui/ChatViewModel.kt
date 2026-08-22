@@ -37,8 +37,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
     val client = ButlerClient(prefs)
 
+    /** 每條對話沒送出的輸入框內容。落地在 Prefs，活得過 App 被回收 */
+    private val draftByConv = prefs.drafts.toMutableMap()
+
     private val _state = MutableStateFlow(
-        ChatState(lastSeq = prefs.lastSeq, busySince = prefs.busySince),
+        ChatState(
+            lastSeq = prefs.lastSeq,
+            busySince = prefs.busySince,
+            draft = draftByConv[DEFAULT_CONV] ?: "",
+        ),
     )
     val state: StateFlow<ChatState> = _state.asStateFlow()
 
@@ -564,9 +571,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 status = statusByConv[convId],
                 busy = busyByConv[convId] ?: false,
                 busySince = busySinceByConv[convId] ?: 0L,
+                // 每條對話各自的草稿。共用一份的話，打給 A 的半句話會出現在 B 底下
+                draft = draftByConv[convId] ?: "",
             )
         }
         loadSnapshot(convId)
+    }
+
+    /**
+     * 輸入框內容變了。每按一個字就寫一次 SharedPreferences——量很小（幾十個字元），
+     * 而「哪一刻會被系統回收」無法預測，攢起來批次寫等於賭它不會剛好在那時發生。
+     */
+    fun setDraft(text: String) {
+        val conv = _state.value.currentConv
+        if (text.isEmpty()) draftByConv.remove(conv) else draftByConv[conv] = text
+        prefs.drafts = draftByConv.toMap()
+        _state.update { it.copy(draft = text) }
     }
 
     /**

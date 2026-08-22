@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
@@ -73,6 +74,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -144,6 +146,7 @@ fun ChatScreen(
     multiConv: Boolean,
     client: ButlerClient,
     onSend: (String) -> Unit,
+    onDraft: (String) -> Unit,
     onStop: () -> Unit,
     onAnswer: (String, String, String?) -> Unit,
     onSwitchConv: (String) -> Unit,
@@ -157,8 +160,17 @@ fun ChatScreen(
     // 新對話會直接停在上一條的捲動位置——短的那條根本沒那麼多內容，看到的是空白。
     // 下面的 landed 也綁同一個 key，兩個要一起換：位置重置了但 landed 還留著 true，
     // 就不會走「進畫面瞬移到底」那條路，切過去看到的是最上面的舊訊息。
-    val listState = remember(state.currentConv) { LazyListState() }
-    var input by remember { mutableStateOf("") }
+    //
+    // **一定要 rememberSaveable**（由 MainActivity 的 SaveableStateProvider 承接）。
+    // 底欄的 `when (tab)` 會把離開的分頁整個移出組合樹，普通的 remember 全部歸零——
+    // 往上翻歷史、切去別的分頁看一眼、切回來，位置沒了、landed 也沒了，於是又被
+    // 瞬移到最底。
+    val listState = rememberSaveable(state.currentConv, saver = LazyListState.Saver) {
+        LazyListState()
+    }
+    // 輸入框的內容住在 ViewModel（見 ChatState.draft），不是這裡的 remember：
+    // 打一半切去別的分頁、或 App 被系統回收，remember 一律歸零
+    val input = state.draft
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
@@ -171,7 +183,11 @@ fun ChatScreen(
     // 用 previewText 而不是 streaming：理由見它的說明，兩邊判斷不一致會讓
     // 捲動目標指向不存在的索引。
     val preview = remember(state.streaming) { state.previewText }
-    val lastIndex = state.items.size + (if (preview.isNotEmpty()) 1 else 0) - 1
+    // 狀態列也是列表裡的一項（見 ChatBody），漏算它會讓「捲到底」少捲一格，
+    // 而少的那一格正好是正在跑的那行字
+    val lastIndex = state.items.size +
+        (if (preview.isNotEmpty()) 1 else 0) +
+        (if (state.busy) 1 else 0) - 1
 
     // 「人是不是正停在最底下」。跟隨與否全看這個，不看有沒有新訊息。
     val atBottom by remember {
@@ -191,7 +207,8 @@ fun ChatScreen(
     // 否則自動捲到一半內容變長就會把自己關掉。
     // 一樣綁對話：在舊對話裡往上翻歷史會把 follow 關掉，那個「關掉」不該跟著人
     // 帶到下一條對話——切過去之後新訊息不會自動跟，看起來像卡住了。
-    var follow by remember(state.currentConv) { mutableStateOf(true) }
+    // 跟 listState 同理要能存活過分頁切換，否則翻到一半切走再回來就恢復跟隨。
+    var follow by rememberSaveable(state.currentConv) { mutableStateOf(true) }
     LaunchedEffect(listState) {
         listState.interactionSource.interactions.collect { i ->
             if (i is DragInteraction.Start) follow = false
@@ -210,8 +227,8 @@ fun ChatScreen(
     // 只會把它的第一行對齊畫面頂端，內容全在下面看不到，人得再自己往下滑。
     // 生成中（streaming 每幾個字就更新一次）用瞬移：動畫會被下一次更新打斷，
     // 看起來就是畫面在抖。
-    var landed by remember(state.currentConv) { mutableStateOf(false) }
-    LaunchedEffect(state.items.size, state.streaming, state.status) {
+    var landed by rememberSaveable(state.currentConv) { mutableStateOf(false) }
+    LaunchedEffect(state.items.size, state.streaming, state.status, state.busy) {
         if (lastIndex < 0) return@LaunchedEffect
         when {
             !landed -> {
@@ -233,6 +250,16 @@ fun ChatScreen(
         if (lastIndex >= 0 && follow) listState.scrollToItem(lastIndex, TO_ITEM_END)
     }
 
+    // 回到底部：脫離跟隨之後的回程。先捲完再恢復跟隨——順序反過來的話，動畫
+    // 還在跑就已經在跟了，新內容進來會各捲各的，看起來像畫面在打架。
+    val backToBottom: () -> Unit = {
+        scope.launch {
+            if (lastIndex >= 0) listState.animateScrollToItem(lastIndex, TO_ITEM_END)
+            follow = true
+        }
+        Unit
+    }
+
     val body = @Composable {
         ChatBody(
             state, listState, input,
@@ -240,8 +267,13 @@ fun ChatScreen(
             multiConv = multiConv,
             client = client,
             onAnswer = onAnswer,
-            onInput = { input = it },
-            onSend = { onSend(input); input = "" },
+            onInput = onDraft,
+            // 自己送出的訊息一定要看得到。人在上面翻歷史時按送出，畫面停在原地
+            // 等於這則訊息石沉大海——所以送出本身就是一次「我要回到最新」
+            onSend = { onSend(input); onDraft(""); follow = true },
+            // 貼在底部時這顆只會擋住內容，所以只在人離開底部時出現
+            showToBottom = !atBottom,
+            onToBottom = backToBottom,
             onStop = onStop,
             onOpenDrawer = { scope.launch { drawerState.open() } },
             onResend = onSend,
@@ -607,6 +639,8 @@ private fun ChatBody(
     onAnswer: (String, String, String?) -> Unit,
     onInput: (String) -> Unit,
     onSend: () -> Unit,
+    showToBottom: Boolean,
+    onToBottom: () -> Unit,
     onStop: () -> Unit,
     onOpenDrawer: () -> Unit,
     onResend: (String) -> Unit,
@@ -652,7 +686,9 @@ private fun ChatBody(
         ChatTopBar(state, title, multiConv, onOpenDrawer) { showConvSettings = true }
         HorizontalDivider(color = Palette.Line, thickness = 0.6.dp)
 
-        if (state.items.isEmpty() && preview.isEmpty()) {
+        // 忙的時候也要走下面那條路：狀態列現在住在對話串的尾巴，
+        // 對話還空著就送出第一則訊息時，這裡若走大臉分支會連狀態列一起沒有
+        if (state.items.isEmpty() && preview.isEmpty() && !state.busy) {
             // 空對話：大臉問候。這是桌寵存在感最強的時刻。
             Column(
                 Modifier.weight(1f).fillMaxWidth(),
@@ -678,14 +714,17 @@ private fun ChatBody(
             // 最新一則回覆旁的桌寵是「活的」（跟著實際狀態變表情），
             // 歷史訊息旁的是安靜的 Idle——像通訊軟體的頭像，但最新那顆會演戲
             val lastReply = state.items.indexOfLast { it is TraceItem.Reply }
-            LazyColumn(
+            // Box 只是為了讓回到底部那顆浮在訊息流上。不用 weight 給 LazyColumn
+            // 而是給 Box：兩層都吃 weight 的話，第二層拿到的是「剩下的剩下」
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+              LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     horizontal = Space.Screen, vertical = 12.dp,
                 ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
+              ) {
                 items(state.items.size) { i ->
                     val live = i == lastReply && preview.isEmpty()
                     TraceRow(
@@ -699,10 +738,16 @@ private fun ChatBody(
                 if (preview.isNotEmpty()) {
                     item { BotRow(state.pet) { MarkdownText(preview) } }
                 }
+                // 狀態列是對話的一部分，不是輸入框的一部分。原本擺在 InputDock
+                // 上面、跟著 imePadding 走，鍵盤一升起它就黏在鍵盤頭上飄著，
+                // 跟正在長出來的內容分了家
+                if (state.busy) item { StatusLine(state) }
+              }
+              if (showToBottom) {
+                  ToBottomButton(onToBottom, Modifier.align(Alignment.BottomEnd))
+              }
             }
         }
-
-        if (state.busy) StatusLine(state)
 
         InputDock(
             value = input,
@@ -725,6 +770,29 @@ private fun ChatBody(
             onRemoveAttach = onRemoveAttach,
         )
     }
+}
+
+/**
+ * 回到最新的訊息。
+ *
+ * 往上翻歷史就脫離跟隨，之後畫面不會自己動——沒有這顆的話，一條長對話要一路
+ * 滑回去才追得上助理正在講的話。只在人離開底部時出現。
+ * 底色給不透明的 Palette.Bg：它蓋在訊息上，半透明會讓底下的字透出來變成一團。
+ */
+@Composable
+private fun ToBottomButton(onClick: () -> Unit, modifier: Modifier = Modifier) = Box(
+    modifier
+        .padding(end = Space.Screen, bottom = 12.dp)
+        .size(40.dp)
+        .background(Palette.Bg)
+        .border(1.dp, Palette.Line)
+        .clickable(onClick = onClick),
+    contentAlignment = Alignment.Center,
+) {
+    Icon(
+        Icons.Filled.KeyboardArrowDown, "回到最新的訊息",
+        tint = Palette.Text, modifier = Modifier.size(22.dp),
+    )
 }
 
 /** cc-bot 頁還沒有任何對話時的空畫面。 */
@@ -1192,9 +1260,9 @@ private fun StageRow(s: TraceItem.Stage) {
 
 @Composable
 private fun StatusLine(state: ChatState) = Column(
-    Modifier.fillMaxWidth()
-        .padding(start = Space.Screen + AvatarW, end = Space.Screen)
-        .padding(vertical = 6.dp),
+    // 只留頭像寬度的縮排：它現在是 LazyColumn 的一項，左右的 Space.Screen
+    // 由那邊的 contentPadding 給了，這裡再加一次會變兩倍
+    Modifier.fillMaxWidth().padding(start = AvatarW),
 ) {
     StatusHead(state)
     // 背景子代理：伺服器每兩秒把進行中的清單帶在 status.bg 裡。不畫出來的話，

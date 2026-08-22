@@ -44,7 +44,7 @@ def _uptime_text(sec: float) -> str:
 
 
 def _git_head() -> dict[str, str]:
-    """目前跑的是哪一版。重啟之後靠這個確認新程式碼真的生效了。
+    """磁碟上最新的一筆 commit。
 
     拿不到就回空字串：git 不在、不是 repo、或這是打包出去的複本，
     都不該讓控制台整頁壞掉。
@@ -64,19 +64,34 @@ def _git_head() -> dict[str, str]:
         return {"commit": "", "subject": ""}
 
 
+# 這個行程啟動時，磁碟上的程式碼是哪一版。放在模組層而不是每次查：
+# 這才是「正在跑的版本」的定義——之後 git 再怎麼變，跑的都還是這一份。
+BOOT_HEAD: dict[str, str] = _git_head()
+
+
 @router.get("")
 async def status(_: str = Depends(require_token)) -> dict[str, Any]:
-    """服務現況。`git` 要開子行程，包 to_thread 免得卡住事件迴圈。"""
+    """服務現況。`git` 要開子行程，包 to_thread 免得卡住事件迴圈。
+
+    回兩個版本而不是一個。原本只回「現在的 HEAD」，那答的是**磁碟上**的版本，
+    不是**正在跑**的版本：改完程式碼一 commit，控制台立刻顯示新的雜湊，
+    可是行程裡跑的還是舊的那份——那行字於是專門在使用者最需要它的時候說謊
+    （「我到底按過重啟了沒？」）。現在跑的那份看 [BOOT_HEAD]，它在行程啟動時
+    就固定了；兩者不同就是「有東西還沒生效」。
+    """
     import os
 
     now = datetime.now()
-    head = await asyncio.to_thread(_git_head)
+    latest = await asyncio.to_thread(_git_head)
     return {
         "pid": os.getpid(),
         "started_at": STARTED_AT.strftime("%Y-%m-%dT%H:%M:%S"),
         "uptime": _uptime_text((now - STARTED_AT).total_seconds()),
         "port": config.PORT,
-        **head,
+        "commit": BOOT_HEAD["commit"],
+        "subject": BOOT_HEAD["subject"],
+        "latest_commit": latest["commit"],
+        "latest_subject": latest["subject"],
     }
 
 

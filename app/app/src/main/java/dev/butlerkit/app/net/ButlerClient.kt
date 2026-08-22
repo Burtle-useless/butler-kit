@@ -188,9 +188,18 @@ data class KanbanColumn(
 /**
  * 電腦上那個服務的現況。[commit] 與 [subject] 是它正在跑的版本，
  * 按下重啟之後靠這兩個確認新程式碼真的生效了。拿不到 git 資訊時會是空字串。
+ *
+ * [latestCommit] 是**磁碟上**最新的一筆。跟 [commit] 不同就代表程式改過了
+ * 但還沒重啟——少了這組對照，改完程式碼一 commit，版本那行立刻顯示新雜湊，
+ * 可是行程裡跑的還是舊的。
  */
 data class SystemStatus(
-    val pid: Int, val uptime: String, val commit: String, val subject: String,
+    val pid: Int,
+    val uptime: String,
+    val commit: String,
+    val subject: String,
+    val latestCommit: String = "",
+    val latestSubject: String = "",
 )
 
 /**
@@ -744,6 +753,8 @@ class ButlerClient(private val prefs: Prefs) {
                 uptime = it.optString("uptime"),
                 commit = it.optString("commit"),
                 subject = it.optString("subject"),
+                latestCommit = it.optString("latest_commit"),
+                latestSubject = it.optString("latest_subject"),
             )
         }
 

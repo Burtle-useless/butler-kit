@@ -240,6 +240,13 @@ data class ChatState(
     /** 目前顯示的對話。 */
     val currentConv: String = "main",
     /**
+     * 這條對話的輸入框內容。
+     *
+     * 住在這裡而不是畫面的 `remember`：打一半切去別的分頁、或 App 被系統回收，
+     * `remember` 一律歸零，那段字就沒了。落地在 `Prefs.drafts`。
+     */
+    val draft: String = "",
+    /**
      * 按了「新對話」但還沒講話：畫面清空、但伺服器上還沒真的建立。
      * 送出第一則訊息時才落地，避免清單堆一排從沒講過話的空對話。
      */

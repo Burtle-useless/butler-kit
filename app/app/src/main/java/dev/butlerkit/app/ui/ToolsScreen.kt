@@ -395,6 +395,15 @@ private fun ServiceSection(client: ButlerClient) {
                     lineHeight = Type.MetaLine,
                 )
             }
+            // 磁碟上已經有更新的 commit＝程式改過了但還沒重啟。少了這一行，
+            // 上面那個雜湊看起來永遠是對的，「我到底按過重啟了沒」無從判斷
+            if (s.latestCommit.isNotBlank() && s.latestCommit != s.commit) {
+                Text(
+                    "有新版 ${s.latestCommit} 還沒生效　${s.latestSubject}",
+                    color = Palette.Accent, fontSize = Type.Meta,
+                    lineHeight = Type.MetaLine,
+                )
+            }
         }
         err?.let { Text(it, color = Palette.Danger, fontSize = Type.Meta) }
 

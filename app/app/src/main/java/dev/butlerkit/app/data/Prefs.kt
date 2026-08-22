@@ -146,6 +146,20 @@ class Prefs(context: Context) {
             .apply()
 
     /**
+     * 每條對話沒送出的輸入框內容，`conv_id` → 草稿。
+     *
+     * 打一半切去別的分頁、或 App 被系統回收，Compose 的 `remember` 一律歸零，
+     * 那段字就沒了。跟 [savedFiles] 同一套做法序列化成 JSON。
+     */
+    var drafts: Map<String, String>
+        get() = runCatching {
+            Json.decodeFromString(SAVED_SERIALIZER, sp.getString(KEY_DRAFTS, "") ?: "")
+        }.getOrDefault(emptyMap())
+        set(v) = sp.edit()
+            .putString(KEY_DRAFTS, Json.encodeToString(SAVED_SERIALIZER, v))
+            .apply()
+
+    /**
      * 面對面翻譯上次選的兩個語言，存 `TalkLang` 的 enum name。
      *
      * 存這個是因為換語言要重新下載／載入語言包（各約 30MB），
@@ -174,8 +188,9 @@ class Prefs(context: Context) {
         private const val KEY_USAGE_AT = "usage_at"
         private const val KEY_SCHEDULED = "scheduled_ids"
         private const val KEY_SAVED_FILES = "saved_files"
+        private const val KEY_DRAFTS = "drafts"
 
-        /** [savedFiles] 的 JSON serializer。 */
+        /** [savedFiles] 與 [drafts] 共用的 JSON serializer。 */
         private val SAVED_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
         private const val KEY_BUSY_SINCE = "busy_since"
         private const val KEY_TALK_MINE = "talk_mine"
