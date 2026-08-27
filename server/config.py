@@ -63,9 +63,20 @@ WORK_PERSONA: Final[str] = (os.environ.get("BUTLER_WORK_PERSONA") or "work").str
 # 設了這個路徑，助理被這樣質疑時會先去讀檔案再回話。
 NOTES_FILE: Final[str] = (os.environ.get("BUTLER_NOTES_FILE") or "").strip()
 
-CLAUDE_CLI: Final[str] = (
-    os.environ.get("CLAUDE_CLI") or os.path.expandvars(r"%APPDATA%\npm\claude.cmd")
-)
+# CLI 的位置**交給 SDK 自己決定**，這裡只留人工覆寫的入口。
+#
+# 這裡曾經寫死 `%APPDATA%\npm\claude.cmd`。新版 claude-agent-sdk 拒絕 spawn 任何
+# .bat/.cmd——Windows 用 cmd.exe 執行批次檔，參數可以被注入，而且沒有可靠的跳脫
+# 方式——於是每個回合都在 connect() 拋 CLIConnectionError。
+#
+# **那個症狀完全不指向這裡**：伺服器正常、HTTP 200、訊息排進佇列，只有需要跑 CC
+# 的路徑死掉，畫面上是 errors.py 的 UNKNOWN（「出了點狀況」）。舊版 SDK 沒有這道
+# 檢查，所以同一行程式碼在此之前一直能跑：新裝的人必踩，既有的人升級 SDK 後才踩。
+#
+# 不改成寫死另一個路徑，是因為 SDK 的 wheel 自帶一支 `_bundled/claude.exe`，版本與
+# SDK 同批發佈，讓它自己找就不會走鐘。要指定別的（例如測試特定版本）就設 CLAUDE_CLI
+# 環境變數，**但必須指向原生 .exe**，不能是 npm 在 Windows 裝出來的 .cmd shim。
+CLAUDE_CLI: Final[str | None] = os.environ.get("CLAUDE_CLI") or None
 
 # ── 監聽位址（安全地基，見計畫風險 #7）──────────────────────────────────────
 PORT: Final[int] = int(os.environ.get("BUTLER_PORT") or 47362)

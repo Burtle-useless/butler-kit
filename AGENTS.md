@@ -27,8 +27,11 @@ Claude Code。你要做的是把 server 跑起來、編一支 APK 給他裝、�
 **電腦端（server）**
 - Python 3.11+
 - Claude Code CLI 已安裝且已登入（`claude` 指令跑得動）
-- Windows：`config.CLAUDE_CLI` 預設找 `%APPDATA%\npm\claude.cmd`，
-  裝在別處就設 `CLAUDE_CLI` 環境變數。macOS / Linux 一律要設。
+- CLI 的位置不用設定：SDK 會用自己 wheel 裡帶的那支，版本與 SDK 同批。
+  真要指定別的才設 `CLAUDE_CLI` 環境變數，**且必須指向原生執行檔**——
+  Windows 上不能填 npm 裝出來的 `claude.cmd`，SDK 拒絕 spawn 批次檔
+  （cmd.exe 執行 `.bat`/`.cmd` 時參數可被注入），填了會每個回合都在
+  連線階段失敗，而畫面上只顯示一句「出了點狀況」。
 
 **編 APK**
 - JDK 17 或 21
@@ -71,7 +74,7 @@ BUTLER_CWD=C:\path\to\work  # Claude Code 的預設工作目錄，預設是家�
 BUTLER_PERSONA=default      # 人格檔名，對應 server/personas/<名字>.txt
 BUTLER_NOTES_FILE=...       # 「失憶自救」要讀的筆記檔，留空＝關掉這條規則
 BUTLER_PLAN=max             # 訂閱方案，填 max/team 高階模型才拿得到 1M context
-CLAUDE_CLI=...              # Claude Code CLI 的完整路徑
+CLAUDE_CLI=...              # 留空＝用 SDK 自帶的。要填就填原生執行檔，不能是 .cmd
 DEFAULT_MODEL=claude-sonnet-4-6
 ```
 
