@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import threading
 import time
@@ -49,14 +48,29 @@ def hash_of(token: str) -> str:
     return _hash(token)
 
 
+# devices.json 的快取：(mtime, 內容)。`verify` 在每個請求（含每次 SSE 重連）上
+# 被叫，先前每次都同步讀檔、拖住整個事件迴圈；檔案只在配對／撤銷時才變，
+# 看 mtime 沒變就直接用上次的。
+_cache: tuple[float, dict] | None = None
+
+
 def _load() -> dict:
+    global _cache
     with _LOCK:
+        try:
+            mtime = config.DEVICES_FILE.stat().st_mtime
+        except OSError:
+            mtime = -1.0
+        if _cache is not None and _cache[0] == mtime:
+            return _cache[1]
         try:
             # 用重試版讀：讀不到就回預設空清單，而 ensure_token 看到空清單會
             # 生一把新 token 存回去——已註冊的裝置就這樣全部被踢掉。
-            return json.loads(read_text_with_retry(config.DEVICES_FILE))
+            data = json.loads(read_text_with_retry(config.DEVICES_FILE))
         except Exception:
             return {"devices": {}, "revoked": []}
+        _cache = (mtime, data)
+        return data
 
 
 def _save(data: dict) -> None:
@@ -73,7 +87,7 @@ def ensure_token() -> tuple[str, bool]:
     常駐之後會無限累積，而且舊 token 全部繼續有效，等於每重啟一次就多發一把鑰匙。
     伺服器只存雜湊，所以已有裝置時拿不回明文，回空字串由呼叫端決定怎麼顯示。
     """
-    env = (os.environ.get("BUTLER_TOKEN") or "").strip()
+    env = config.butler_token()
     if env:
         return env, False
     with _LOCK:
@@ -115,7 +129,7 @@ def verify(token: str) -> bool:
     """比對 token。用 compare_digest 避免時序側channel。"""
     if not token:
         return False
-    env = (os.environ.get("BUTLER_TOKEN") or "").strip()
+    env = config.butler_token()
     # 比雜湊不比明文。`compare_digest` 收兩個 str 時要求**兩邊都是 ASCII**，
     # 只要有人送 `Authorization: Bearer 中文` 就拋 TypeError——那不是 401 而是 500，
     # 等於未認證的請求就能把任何端點打爆並在日誌裡留下 traceback。

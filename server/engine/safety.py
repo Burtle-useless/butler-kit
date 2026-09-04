@@ -1,7 +1,12 @@
 """破壞性指令護欄。
 
 這是黑名單，擋常見偽裝、不擋決心——真正的隔離要靠沙箱或白名單（架構級改動）。
-但在「人不在電腦前」的使用情境下，它是唯一一道人為把關，預設必須開啟。
+在「人不在電腦前」的使用情境下，它是唯一一道人為把關，所以 config 的預設是開。
+
+**但它可以整個被啟動環境關掉，而且這台機器上就是關的。** `config.CONFIRM_ENABLED`
+讀環境變數 `CONFIRM_DANGEROUS`，`launch_butler.vbs` 寫死了 `=0`（使用者自己的選擇）：
+關閉時 `needs_confirm` 第一行就回 False，破壞性指令**不會跳確認、直接執行**。
+現在的狀態從 `/v1/settings` 的 `confirm_dangerous` 欄位看得到，不必猜。
 """
 from __future__ import annotations
 
@@ -29,7 +34,9 @@ DESTRUCTIVE_RE = re.compile(
 def needs_confirm(tool_name: str, tool_input: dict) -> bool:
     """判斷這次工具呼叫是否為需確認的破壞性動作。
 
-    只比對會執行任意系統指令的 Bash/PowerShell（惡意夾帶／幻象指令的主要途徑）。
+    只看會執行任意系統指令的 Bash/PowerShell（惡意夾帶／幻象指令的主要途徑），
+    比對指令內容有沒有命中 DESTRUCTIVE_RE。
+
     判斷出錯時視同危險、攔下確認（**fail-closed**）：寧可多按一次，
     也不讓「弄壞判斷函式」變成解除安全鎖的後門。
     """
@@ -41,6 +48,19 @@ def needs_confirm(tool_name: str, tool_input: dict) -> bool:
     except Exception:
         return True
     return False
+
+
+def confirm_prompt(tool_name: str, tool_input: dict, mins: int) -> tuple[str, str, str]:
+    """確認框要顯示的 (標題, 說明, 原文)。
+
+    Bash/PowerShell 一律顯示**指令全文，不可截斷或摘要**——攻擊面正是
+    「說明講 A、指令做 B」，一截尾就把破壞性尾段推出視野。
+    """
+    return (
+        f"要執行這個 {tool_name} 指令嗎？",
+        f"偵測到破壞性操作。{mins} 分鐘未回應將自動取消。",
+        str(tool_input.get("command", "")),
+    )
 
 
 def deny(reason: str) -> dict:
@@ -85,14 +105,12 @@ def make_pretool_hook(
             return deny(ASK_DELEGATED_REASON)
         if not needs_confirm(tool_name, tool_input):
             return {}
-        # 確認提示必須讓使用者核對「原始指令全文」，**不可截斷或摘要**——
-        # 攻擊面正是「說明講 A、指令做 B」，一截尾就把破壞性尾段推出視野。
-        raw = str(tool_input.get("command", ""))
         mins = max(1, int(config.CONFIRM_TIMEOUT_SEC // 60))
+        title, body, raw = confirm_prompt(tool_name, tool_input, mins)
         resp = await frontend.ask(AskRequest(
             kind="confirm_destructive",
-            title=f"要執行這個 {tool_name} 指令嗎？",
-            body=f"偵測到破壞性操作。{mins} 分鐘未回應將自動取消。",
+            title=title,
+            body=body,
             raw=raw,
             choices=CONFIRM_CHOICES,
             timeout_sec=config.CONFIRM_TIMEOUT_SEC,

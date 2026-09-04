@@ -91,6 +91,33 @@ async def test_stale_cursor_no_replay() -> None:
           f"共 {len(got)} 則")
 
 
+async def test_stale_before_first_publish() -> None:
+    """迴歸測試：hub 剛建好、一則都還沒 publish，帶舊世代游標連上也要拿到 stream.reset。
+
+    先前 `_boot_seq` 要等第一次 publish 才有值，重啟後搶先重連的裝置（SSE 重連比
+    第一個回合快得多）既不算 stale、也拿不到 seq.gap，畫面就停在上一世代。
+    """
+    print("\n[還沒 publish 過就重連：也要 stream.reset]")
+    old_cursor = make_event("main", "t0", "status").seq     # 「上一世代」最後看到的序號
+    h = EventHub(size=10)
+    check("建構後就認得出舊世代游標", h.is_stale_cursor(old_cursor) is True)
+    got, gap = h.replay_from(old_cursor)
+    check("不重播、不報斷層", got == [] and gap is False)
+
+    out: list = []
+    agen = h.stream(old_cursor)
+    try:
+        out.append(await asyncio.wait_for(agen.__anext__(), timeout=1.0))
+    finally:
+        await agen.aclose()
+    check("第一則就是 stream.reset", bool(out) and out[0].type == "stream.reset",
+          str([e.type for e in out]))
+    # 本世代之後發的事件不會被誤判
+    ev = make_event("main", "t1", "status")
+    h.publish(ev)
+    check("本世代的序號不算 stale", h.is_stale_cursor(ev.seq) is False)
+
+
 def test_gap() -> None:
     print("\n[seq.gap 斷層偵測]")
     h = EventHub(size=3)
@@ -253,6 +280,7 @@ async def test_emit_never_raises() -> None:
 async def main() -> int:
     test_replay()
     await test_stale_cursor_no_replay()
+    await test_stale_before_first_publish()
     test_gap()
     await test_stream_live()
     await test_no_lost_wakeup()

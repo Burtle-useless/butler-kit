@@ -27,10 +27,11 @@ import json
 import threading
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+
+import config
 
 _LOCK = threading.Lock()
-_DATA = Path(__file__).parent / "data" / "kanban.json"
+_DATA = config.DATA_DIR / "kanban.json"
 
 # 看板由上到下的欄位順序。
 STATUSES = ["todo", "doing", "done"]

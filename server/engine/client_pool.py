@@ -2,6 +2,10 @@
 
 每個對話維持一個活進程，活躍期間不關——同進程同 session、不 fork、不留碎片；
 閒置逾時才回收釋放記憶體，下次以 resume 接回。
+
+池子裡放的是 `Mailbox` 而不是裸 client：訊息的讀取權屬於對話、不屬於回合
+（理由見 `mailbox` 的模組說明）。取得 client 的地方一律連同它的收發中樞一起拿，
+才不會有人繞過去直接讀串流——那會跟常駐讀取者搶訊息。
 """
 from __future__ import annotations
 
@@ -14,13 +18,15 @@ from claude_agent_sdk import ClaudeSDKClient
 import config
 from protocol import Frontend
 
+from . import bg_notify, models
 from .history import session_exists
+from .mailbox import Mailbox
 from .options import build_options
 from .state import ConvState, eff_effort, eff_model
 
 log = logging.getLogger(__name__)
 
-_clients: dict[str, ClaudeSDKClient] = {}
+_clients: dict[str, Mailbox] = {}
 _used: dict[str, float] = {}        # 最後使用時間（閒置回收與 LRU 判斷）
 _sigs: dict[str, tuple] = {}        # 設定指紋（變了就重建）
 _locks: dict[str, asyncio.Lock] = {}   # 每個對話一把，見 [_lock_for]
@@ -61,19 +67,37 @@ def client_sig(state: ConvState) -> tuple:
 
 
 async def drop(conv_id: str) -> None:
-    """關閉並移除某對話的長駐 client。永不拋例外。"""
-    c = _clients.pop(conv_id, None)
+    """關閉並移除某對話的長駐 client。永不拋例外。
+
+    **關掉進程等於殺掉跑在裡面的背景工作**，所以要順手把帳結掉：那些工作不會
+    再送任何訊息過來，帳上留著就是永遠停在「進行中」的卡片（見
+    `bg_notify.orphan_all`）。畫面不會立刻更新——`drop` 拿不到 frontend，
+    這裡刻意不為了推一則事件把 transport 反向拉進來——但下一次 snapshot
+    就會是對的，而在那之前使用者看到的也已經不是假的「還在跑」。
+    """
+    box = _clients.pop(conv_id, None)
     _used.pop(conv_id, None)
     _sigs.pop(conv_id, None)
-    if c is not None:
-        try:
-            await c.disconnect()
-        except Exception:
-            pass
+    if box is not None:
+        await box.close()
+    gone = bg_notify.orphan_all(conv_id)
+    if gone:
+        log.info("回收 %s 的連線，順帶結掉 %d 件背景工作", conv_id, gone)
 
 
-async def acquire(state: ConvState, frontend: Frontend) -> ClaudeSDKClient:
-    """取得該對話的長駐 client；無、或設定指紋已變，則（丟棄後）新建並連線。
+def peek(conv_id: str) -> Mailbox | None:
+    """取得該對話**現有**的收發中樞，沒有就回 None。絕不建立新的。
+
+    給「只在連線還活著時才有意義」的操作用——目前是停止背景工作。那件工作
+    跑在某個 CLI 進程裡，進程如果已經被回收，工作也早就跟著沒了，這時開一個
+    新進程只是白白付啟動時間再對它下一道沒有對象的指令。
+    """
+    box = _clients.get(conv_id)
+    return box if box is not None and box.alive() else None
+
+
+async def acquire(state: ConvState, frontend: Frontend) -> Mailbox:
+    """取得該對話的收發中樞；無、或設定指紋已變，則（丟棄後）新建並連線。
 
     只有首次連線才帶 resume 接回舊 session；之後同一 client 多輪都在同進程同 session。
     """
@@ -81,11 +105,27 @@ async def acquire(state: ConvState, frontend: Frontend) -> ClaudeSDKClient:
     # 整段進鎖，connect 期間才不會有第二個呼叫也開一個進程（見 [_lock_for]）。
     # 已有可用 client 的快路徑也要進來，但那條路上沒有 await，鎖是立刻拿到的。
     async with _lock_for(cid):
-        c = _clients.get(cid)
-        if c is not None and _sigs.get(cid) == client_sig(state):
+        box = _clients.get(cid)
+        # 讀取者死了就等於這條連線廢了（串流關閉或 pump 出錯），拿去用只會立刻
+        # 再炸一次。當成沒有，往下重建。
+        if box is not None and not box.alive():
+            log.warning("對話 %s 的讀取者已停止，重建連線", cid)
+            await drop(cid)
+            box = None
+        if box is not None and _sigs.get(cid) == client_sig(state):
             _used[cid] = time.time()
-            return c
-        if c is not None:                      # 設定已變 → 丟棄舊的，用新設定重建
+            # 回合外事件要靠它送出去，每次都換成最新的那個（見 Mailbox.frontend）
+            box.frontend = frontend
+            return box
+        if box is not None and bg_notify.active(cid):
+            # 設定變了，但這個進程裡還有背景工作在跑：重建＝殺進程＝那些工作陪葬。
+            # 先沿用舊設定把這回合跑完，背景工作結束後下一次 acquire 自然重建。
+            log.info("對話 %s 設定已變，但有 %d 件背景工作在跑，先沿用舊連線",
+                     cid, len(bg_notify.active(cid)))
+            _used[cid] = time.time()
+            box.frontend = frontend
+            return box
+        if box is not None:                    # 設定已變 → 丟棄舊的，用新設定重建
             await drop(cid)
         # 進程池上限：滿了先淘汰最久未用的（LRU）。session 不受影響，
         # 被淘汰的對話下次有訊息時自動 resume 接回，只是多付一次進程啟動時間。
@@ -104,10 +144,19 @@ async def acquire(state: ConvState, frontend: Frontend) -> ClaudeSDKClient:
                 state.session_id = None
         c = ClaudeSDKClient(options)
         await c.connect()
-        _clients[cid] = c
+        # 連上就順手向 CLI 要一次官方模型清單（一小時內拿過會直接跳過）。
+        # 這是「模型選項跟著官方更新」唯一的資料來源，不是額外的功能。
+        await models.refresh_from(c)
+        # on_wake：模型在回合外自己開口（背景工作跑完後 CLI 原生的那個週期）
+        # 要開成 wake 回合接住，不是丟到 idle。派工函式由 transport 註冊。
+        box = Mailbox(cid, c, frontend, bg_notify.handle, on_wake=bg_notify.on_wake)
+        # 連上就開始讀，不等第一個回合。這是整個設計的重點：讀取者的壽命跟著
+        # 連線走，不跟著回合走，回合外的訊息才有人接。
+        box.start()
+        _clients[cid] = box
         _sigs[cid] = client_sig(state)
         _used[cid] = time.time()
-        return c
+        return box
 
 
 async def reaper() -> None:

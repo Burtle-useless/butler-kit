@@ -87,7 +87,13 @@ def test_history_hides_ops_messages() -> None:
     check("補跑提示被擋掉", not any(t.startswith("剛才那一步") for t in texts))
     check("只是提到關鍵字的不算維運產物",
           "那個 <task-notification> 是什麼東西" in texts, str(texts))
-    check("總共只剩三則", len(texts) == 3, str(len(texts)))
+    # 背景任務通知不畫成使用者的話，但要變成一行 role=system 的「助理接手」說明——
+    # 重開 App 才看得出助理為什麼突然多講一段
+    notes = [m for m in out if m.get("role") == "system"]
+    check("通知變成一行 system 說明", len(notes) == 1 and "助理接手" in notes[0]["text"],
+          str(notes))
+    check("對話本身只剩三則", len([m for m in out if m.get("role") != "system"]) == 3,
+          str(len(texts)))
 
 
 if __name__ == "__main__":

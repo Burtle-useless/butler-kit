@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator
 
 import config
 from protocol import AskRequest, AskResponse, Event, make_event
+from protocol.events import _seq
 
 
 class EventHub:
@@ -25,14 +26,19 @@ class EventHub:
     def __init__(self, size: int | None = None) -> None:
         self._buf: deque[Event] = deque(maxlen=size or config.RING_BUFFER_SIZE)
         self._waiters: set[asyncio.Event] = set()
-        # 本次啟動發出的第一個序號。序號的高位是啟動時間戳，所以重啟後的序號
+        # 本世代能發出的第一個序號。序號的高位是啟動時間戳，所以重啟後的序號
         # 一定大於上一世代——用這個把「服務重啟」跟「真的漏事件」分開。
-        self._boot_seq: int | None = None
+        #
+        # **建構時就從序號產生器取，不等第一次 publish。** 先前是 publish 才填，
+        # 於是重啟後搶在任何事件之前重連的裝置（手機的 SSE 重連比回合快得多）
+        # 帶著舊世代游標進來，這裡還是 None → 既不算 stale 也拿不到 stream.reset，
+        # 前端以為自己收齊了，畫面停在上一世代。
+        # 取走的那個號碼不會有任何事件用到，之後發的序號一律大於它，所以
+        # 「< _boot_seq 就是舊世代」的判準要用「取走的號碼 + 1」。
+        self._boot_seq: int = _seq.next() + 1
 
     def publish(self, ev: Event) -> None:
         """同步、不阻塞。emit 契約要求永不拖垮回合，所以這裡不做任何 IO。"""
-        if self._boot_seq is None:
-            self._boot_seq = ev.seq
         self._buf.append(ev)
         for w in list(self._waiters):
             w.set()
@@ -59,8 +65,7 @@ class EventHub:
 
         序號高位是啟動時間戳，重啟後整批序號都會大於上一世代，比大小就分得出來。
         """
-        return (after_seq is not None and self._boot_seq is not None
-                and after_seq < self._boot_seq)
+        return after_seq is not None and after_seq < self._boot_seq
 
     def replay_from(self, after_seq: int | None) -> tuple[list[Event], bool]:
         """取出 after_seq 之後的事件。
@@ -197,16 +202,13 @@ class SseFrontend:
                 choice_id=answer.choice_id if answer is not None else "",
             ))
 
-    def resolve(self, ask_id: str, choice_id: str, text: str | None = None) -> bool:
+    def resolve(self, ask_id: str, choice_id: str) -> bool:
         """由 HTTP 端點呼叫，把答案交回等待中的 ask。回傳是否成功對上。"""
         entry = self._pending.get(ask_id)
         if entry is None or entry[1].done():
             return False
-        entry[1].set_result(AskResponse(choice_id=choice_id, text=text))
+        entry[1].set_result(AskResponse(choice_id=choice_id))
         return True
-
-    def has_pending(self) -> bool:
-        return any(not f.done() for _, f in self._pending.values())
 
     def pending_asks(self) -> list[dict[str, Any]]:
         """還在等答案的提問，格式對齊 `ask.request` 事件。

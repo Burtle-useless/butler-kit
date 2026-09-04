@@ -11,12 +11,14 @@ cc-bot 的 discord_bot.py:1435 早就有這段判準，butler 移植時漏抄。
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 
 import config  # noqa: F401
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
 from engine import runner as runner_mod
+from engine.mailbox import MailboxClosed
 from engine.state import ConvState
 from protocol import Event
 from pathlib import Path
@@ -65,19 +67,44 @@ class FakeClient:
         self.queries.append(prompt)
 
 
+class _FakeInbox:
+    """對齊 mailbox._Inbox 的最小介面：runner 現在用 get(timeout) 讀。"""
+
+    def __init__(self, stream: list) -> None:
+        self._items = list(stream)
+
+    async def get(self, timeout: float | None = None):
+        if not self._items:
+            raise MailboxClosed()
+        return self._items.pop(0)
+
+
+class FakeBox:
+    """假的收發中樞：只把預錄訊息餵給回合。
+
+    回合外分派（沒人收件時交給 bg_notify）是 `Mailbox` 自己的職責，
+    由 test_mailbox.py 直接對真品測；這裡只需要 run_turn 拿得到訊息。
+    """
+
+    def __init__(self, client: FakeClient) -> None:
+        self.client = client
+        self.frontend = None
+
+    @contextlib.asynccontextmanager
+    async def claim(self):
+        yield _FakeInbox(self.client.stream)
+
+
 def install(stream: list) -> FakeClient:
-    """把 runner 的 client 取得與訊息迭代換成假的。"""
+    """把 runner 取得收發中樞的路徑換成假的。"""
     client = FakeClient(stream)
+    box = FakeBox(client)
 
     async def fake_acquire(state, frontend):
-        return client
-
-    async def fake_iter(c):
-        for m in c.stream:
-            yield m
+        box.frontend = frontend
+        return box
 
     runner_mod.client_pool.acquire = fake_acquire   # type: ignore[assignment]
-    runner_mod.iter_messages = fake_iter            # type: ignore[assignment]
     return client
 
 

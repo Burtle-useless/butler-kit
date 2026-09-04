@@ -15,6 +15,7 @@ import asyncio
 from pathlib import Path
 
 import config  # noqa: F401
+from engine import worker as worker_mod
 from engine.state import ConvState
 from transport import app as app_mod
 
@@ -56,19 +57,25 @@ async def main() -> None:
     fe = FakeFE()
     gates: asyncio.Queue = asyncio.Queue()   # 放一個進去＝讓卡住的那輪跑完
     prompts: list[str] = []
+    # 每一輪拿到的來源。傳輸層有沒有把 client 一路帶到回合，只有這裡驗得到
+    srcs: list[str] = []
 
-    async def fake_turn(text, state, frontend) -> None:
+    async def fake_turn(text, state, frontend, src="") -> None:
         prompts.append(text)
+        srcs.append(src)
         await gates.get()
 
-    # 換掉真回合與標題生成：這裡測的是傳輸層的排隊語意，不該燒 API
-    app_mod.handle_turn = fake_turn
-    app_mod.frontend_for = lambda cid: fe
-    app_mod.get_state = lambda cid: ConvState(conv_id=cid, cwd=Path.home())
+    # 換掉真回合與標題生成：這裡測的是排隊語意，不該燒 API
+    worker_mod.handle_turn = fake_turn
+    app_mod.worker.frontend_for = lambda cid: fe
+    worker_mod.get_state = lambda cid: ConvState(conv_id=cid, cwd=Path.home())
     app_mod.state_mod.get_title = lambda cid: "已有標題"
 
-    async def send(text: str) -> None:
-        await app_mod.send_message(CONV, {"text": text}, "tok")
+    async def send(text: str, client: str | None = None) -> None:
+        payload = {"text": text}
+        if client is not None:
+            payload["client"] = client
+        await app_mod.send_message(CONV, payload, "tok")
 
     print("\n[第一則不必排隊]", flush=True)
     await send("第一則")
@@ -79,10 +86,12 @@ async def main() -> None:
     taken = of_type(fe, "message.taken")
     check("有指名它被讀進這一輪", bool(taken) and
           taken[0].data["msg_ids"] == [ums[0].data["msg_id"]])
+    # 沒帶 client 的一律當手機：還沒更新的 App 送的就是這一種
+    check("沒報來源時當成手機", srcs == ["手機"], str(srcs))
 
     print("\n[忙碌時送出的會排隊]", flush=True)
     await send("第二則")
-    await send("第三則")
+    await send("第三則", "desktop")
     ums = of_type(fe, "user.message")
     check("第二則標成排隊中", ums[1].data["queued"] is True)
     check("第三則標成排隊中", ums[2].data["queued"] is True)
@@ -97,6 +106,8 @@ async def main() -> None:
                                             ums[2].data["msg_id"]], str(ids))
     check("兩則合併成同一輪處理", len(prompts) == 2 and
           "第二則" in prompts[1] and "第三則" in prompts[1])
+    # 這一批混了手機與電腦，取最後一則的來源——那則最接近他現在人在哪
+    check("混批取最新那則的來源", srcs[1] == "電腦", str(srcs))
 
     print("\n[按停止：排著的要標成取消]", flush=True)
     # 第二輪還卡在 fake_turn 裡，所以這兩則都只能排著
@@ -105,7 +116,7 @@ async def main() -> None:
     ums = of_type(fe, "user.message")
     check("這兩則都標成排隊中",
           ums[3].data["queued"] is True and ums[4].data["queued"] is True)
-    app_mod._running[CONV].cancel()           # 等同使用者按下停止
+    app_mod.worker.running[CONV].cancel()     # 等同使用者按下停止
     ok = await until(lambda: bool(of_type(fe, "message.dropped")))
     check("發出了 dropped", ok)
     dropped = of_type(fe, "message.dropped")[0].data["msg_ids"] if ok else []
@@ -118,9 +129,9 @@ async def main() -> None:
               for e in of_type(fe, "error")))
 
     # 收工：worker 是無窮迴圈，留著會讓進程不肯結束
-    app_mod._workers[CONV].cancel()
-    app_mod._queues.pop(CONV, None)
-    app_mod._workers.pop(CONV, None)
+    app_mod.worker.workers[CONV].cancel()
+    app_mod.worker.queues.pop(CONV, None)
+    app_mod.worker.workers.pop(CONV, None)
 
     print("\n" + "=" * 50, flush=True)
     if FAILED:

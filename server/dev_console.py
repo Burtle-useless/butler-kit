@@ -11,7 +11,6 @@ HTTP 服務、不接任何手機，光靠這支就該能跑完一個完整回合
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 
 import config  # noqa: F401  # 必須最先 import：模組載入時執行環境變數清洗
@@ -108,7 +107,7 @@ async def main() -> int:
     fe = ConsoleFrontend()
     # 用 BUTLER_CONV 指定對話 id：人格測試要用乾淨的新對話，
     # 不然上一題的脈絡會影響這一題的判斷（例如上一題動過工具，這題就傾向也動）
-    state = get_state(os.environ.get("BUTLER_CONV") or "dev-console")
+    state = get_state(config.DEV_CONSOLE_CONV)
     print(f"{DIM}cwd={state.cwd} · session={state.session_id or '(新對話)'}{RESET}\n")
     # 走完整回合管線（含空回覆重試、續跑、反問、錯誤善後）
     await handle_turn(prompt, state, fe)

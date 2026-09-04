@@ -27,6 +27,11 @@ ASK_RE = re.compile(r"\[\[?\s*ASK\s*:\s*(.+?)\s*\]?\]", re.IGNORECASE | re.DOTAL
 
 NO_RESPONSE = "__NO_RESPONSE__"   # run_claude 無輸出時的哨兵值
 
+# CLI 對「這一輪模型什麼都沒說」的預設 result 文字（續跑提示打過去、模型決定不回
+# 就會收到這句）。它不是助理說的話，卻曾經頂著助理的頭像出現在畫面上（2026-09-02
+# 模擬器實見）。整句吃掉，讓它走 NO_RESPONSE 那條路。
+NO_RESPONSE_RE = re.compile(r"^\s*No response requested\.?\s*$", re.IGNORECASE | re.MULTILINE)
+
 
 def fold_messages(messages: list[Any]) -> tuple[str, str | None, int]:
     """把一回合收到的 SDK 訊息摺疊成 (回覆文字, session_id, ctx_tokens)。
@@ -37,13 +42,18 @@ def fold_messages(messages: list[Any]) -> tuple[str, str | None, int]:
 
     取「最後一則」而非第一則：多訊息回合（開場白→工具→最終回應）第一則是開場白、
     最後一則才是結論；只抓第一則會讓使用者只看到開場白那句（cc-bot 的歷史真 bug）。
+
+    多個 ResultMessage（插話撲空時觀察窗回收的孤兒週期，見 runner 的插話段落）
+    各自的 result 依序串接——後到的覆蓋先到的話，原回合的回覆會整段遺失。
+    正常回合只有一個 Result，行為不變。
     """
     content, new_sid, ctx = "", None, 0
     last_text = ""
+    parts: list[str] = []
     for m in messages:
         if isinstance(m, ResultMessage):
             if m.result:
-                content = m.result
+                parts.append(m.result)
             new_sid = m.session_id or new_sid
             usage = getattr(m, "usage", None) or {}
             ctx = (usage.get("input_tokens", 0)
@@ -53,6 +63,7 @@ def fold_messages(messages: list[Any]) -> tuple[str, str | None, int]:
             txt = "".join(b.text for b in m.content if hasattr(b, "text"))
             if txt.strip():
                 last_text = txt
+    content = "\n\n".join(parts)
     return (content or last_text), new_sid, ctx
 
 
@@ -61,6 +72,7 @@ def clean_reply(content: str) -> str:
     content = MILESTONE_RE.sub("", content)
     content = DONE_RE.sub("", content)
     content = WAIT_RE.sub("", content)
+    content = NO_RESPONSE_RE.sub("", content)
     # 問題本身模型會另外用白話寫在回覆裡，標記只是給系統讀的，留著就是洩漏
     content = ASK_RE.sub("", content)
     return re.sub(r"\[ThinkingBlock\(thinking=.*?\)\]", "", content, flags=re.DOTALL).strip()

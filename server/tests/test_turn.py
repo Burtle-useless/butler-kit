@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import config  # noqa: F401
@@ -27,6 +28,18 @@ def check(name: str, cond: bool, extra: str = "") -> None:
     print(f"  {'PASS' if cond else 'FAIL'}  {name}{'  ' + extra if extra else ''}")
     if not cond:
         FAILED.append(name)
+
+
+@contextmanager
+def _plan(name: str):
+    """暫時換掉訂閱方案。`config.ACCOUNT_PLAN` 是 import 期就定案的常數，
+    測試要驗「方案影響 context 上限」就得自己蓋掉它，不能靠跑測試的人有沒有設環境變數。"""
+    old = config.ACCOUNT_PLAN
+    config.ACCOUNT_PLAN = name          # type: ignore[misc]
+    try:
+        yield
+    finally:
+        config.ACCOUNT_PLAN = old       # type: ignore[misc]
 
 
 class FakeFrontend:
@@ -359,16 +372,15 @@ async def test_ctx_limit_by_model() -> None:
     st = make_state()
     st.model = "claude-sonnet-4-6"
     check("Sonnet 是 200K", turn_mod.ctx_limit(st) == turn_mod.CTX_LIMIT_DEFAULT)
-    # 方案是設定值不是預設值，測試自己設，不然改預設會連累這裡
-    st.model = "claude-opus-5"
-    saved = config.ACCOUNT_PLAN
-    try:
-        config.ACCOUNT_PLAN = "max"
+    # 高階模型的 1M 是**訂閱方案**給的，不是模型自帶的。BUTLER_PLAN 沒填時
+    # （kit 的預設）拿不到，所以這兩條要各自把方案設好再驗，不能靠環境。
+    with _plan("max"):
+        st.model = "claude-opus-5"
         check("Opus 在 max 方案是 1M", turn_mod.ctx_limit(st) == turn_mod.CTX_LIMIT_1M)
-        config.ACCOUNT_PLAN = ""
-        check("沒設方案就不給 1M", turn_mod.ctx_limit(st) == turn_mod.CTX_LIMIT_DEFAULT)
-    finally:
-        config.ACCOUNT_PLAN = saved
+    with _plan(""):
+        st.model = "claude-opus-5"
+        check("沒填方案就退回預設上限",
+              turn_mod.ctx_limit(st) == turn_mod.CTX_LIMIT_DEFAULT)
     st.model = "claude-sonnet-4-6[1m]"
     check("[1m] 後綴強制 1M", turn_mod.ctx_limit(st) == turn_mod.CTX_LIMIT_1M)
 
@@ -383,13 +395,8 @@ async def test_ctx_authoritative_wins() -> None:
     print("\n[context 權威值優先]")
     st = make_state()
     st.model = "claude-opus-5"
-    # 方案是設定值不是預設值，測試自己設（理由同上一個測試）
-    saved = config.ACCOUNT_PLAN
-    try:
-        config.ACCOUNT_PLAN = "max"
+    with _plan("max"):
         check("還沒問到時退回猜測", turn_mod.ctx_limit(st) == turn_mod.CTX_LIMIT_1M)
-    finally:
-        config.ACCOUNT_PLAN = saved
 
     st.ctx_max = 200_000
     st.ctx_threshold = 167_000

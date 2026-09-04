@@ -23,7 +23,7 @@ from typing import Any
 import config
 from util import read_text_with_retry, replace_with_retry
 
-PROJECTS_DIR: Path = Path.home() / ".claude" / "projects"
+PROJECTS_DIR: Path = config.claude_projects_dir()     # 模組變數是給測試換目錄用
 STATE_FILE: Path = config.DATA_DIR / "local_usage.json"
 
 # 留多久。跟 usage.py 對齊，手機上兩者要畫在同一張圖裡。

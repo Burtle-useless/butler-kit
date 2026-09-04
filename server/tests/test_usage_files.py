@@ -175,7 +175,7 @@ def test_outbox_validation() -> None:
         outbox.offer(str(big))
         check("擋下超大檔", False, "沒擋下來")
     except outbox.OutboxError as e:
-        check("擋下超大檔", "檔案分享服務" in str(e), str(e)[:60])
+        check("擋下超大檔", "share.ps1" in str(e), str(e)[:60])
     finally:
         outbox.MAX_OFFER_BYTES = saved
 

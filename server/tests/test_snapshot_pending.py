@@ -5,7 +5,7 @@
 訊息於是從畫面上消失，但伺服器照樣處理它，最後助理回覆了一則你看不到自己問過什麼
 的訊息。
 
-這裡盯的是 `_pending_of`：它讀 asyncio.Queue 的內部 deque，一旦 Python 換掉那個
+這裡盯的是 `Worker.pending_of`：它讀 asyncio.Queue 的內部 deque，一旦 Python 換掉那個
 實作細節就會靜默回空清單（畫面又變回什麼都沒有），所以要有測試守著。
 """
 from __future__ import annotations
@@ -31,16 +31,18 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 async def scenario() -> None:
     print("\n[佇列裡的訊息看得到]")
     q: asyncio.Queue = asyncio.Queue()
-    app_mod._queues[CONV] = q
+    app_mod.worker.queues[CONV] = q
 
-    check("沒有佇列時回空清單", app_mod._pending_of("不存在的對話") == [])
-    check("空佇列回空清單", app_mod._pending_of(CONV) == [])
+    check("沒有佇列時回空清單", app_mod.worker.pending_of("不存在的對話") == [])
+    check("空佇列回空清單", app_mod.worker.pending_of(CONV) == [])
 
-    await q.put(("m1", "先幫我看一下這個"))
-    await q.put(("m2", "順便把那個也跑了"))
-    got = app_mod._pending_of(CONV)
+    await q.put(("m1", "先幫我看一下這個", "手機"))
+    await q.put(("m2", "順便把那個也跑了", "電腦"))
+    got = app_mod.worker.pending_of(CONV)
 
     check("兩則都拿得到", len(got) == 2, str(len(got)))
+    # 來源只給模型看，不該跟著排隊中的氣泡跑到畫面上
+    check("來源不外流到畫面", all("src" not in r for r in got), str(got[0]))
     check("順序是舊到新", [r["msg_id"] for r in got] == ["m1", "m2"],
           str([r.get("msg_id") for r in got]))
     check("內容原封不動", got[0]["text"] == "先幫我看一下這個")
@@ -49,16 +51,16 @@ async def scenario() -> None:
 
     print("\n[讀走之後就不該再出現]")
     await q.get()
-    left = app_mod._pending_of(CONV)
+    left = app_mod.worker.pending_of(CONV)
     check("剩下一則", [r["msg_id"] for r in left] == ["m2"],
           str([r.get("msg_id") for r in left]))
 
     # peek 不能有副作用——它會被 snapshot 頻繁呼叫（每次重連都一次）
-    app_mod._pending_of(CONV)
-    app_mod._pending_of(CONV)
+    app_mod.worker.pending_of(CONV)
+    app_mod.worker.pending_of(CONV)
     check("看過幾次都不會少東西", q.qsize() == 1, str(q.qsize()))
 
-    app_mod._queues.pop(CONV, None)
+    app_mod.worker.queues.pop(CONV, None)
 
 
 async def asks_scenario() -> None:

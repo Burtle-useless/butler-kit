@@ -300,7 +300,7 @@ def test_tools() -> None:
 
         seen.clear()
         r = await t.course_add.handler({
-            "name": "微積分", "day": 0, "from_period": 1, "to_period": 2,
+            "name": "光電導論", "day": 0, "from_period": 1, "to_period": 2,
             "room": "工三 205",
         })
         check("加課成功", not r.get("is_error"), str(r)[:80])
@@ -317,7 +317,7 @@ def test_tools() -> None:
         check("查課表會附上今天是週幾", '"today"' in text)
 
         r = await t.course_list.handler({"day": 0})
-        check("只查某一天", "微積分" in r["content"][0]["text"])
+        check("只查某一天", "光電導論" in r["content"][0]["text"])
         r = await t.course_list.handler({"day": 5})
         check("那天沒課就給空的", '"courses": []' in r["content"][0]["text"],
               r["content"][0]["text"][:60])

@@ -23,6 +23,8 @@ import uuid as _uuid
 from pathlib import Path
 from typing import Any
 
+import config
+
 from .history import _text_of
 from .state import _load_map
 
@@ -39,18 +41,16 @@ _HEAD_LINES = 40
 # 標題長度上限。手機一行放不下太多，後面截掉。
 _TITLE_MAX = 60
 
-# 跟 history.load_history 同一份黑名單：這些是維運產物，拿來當標題會變成
-# 一整排「<command-name>」，看不出哪個是哪個。
-_NOISE_PREFIX = (
-    "剛才那一步還沒收尾", "剛才沒有收到",
-    "/compact", "<command-name>", "<local-command",
-    "This session is being continued from a previous conversation",
-    "請把我們目前為止的對話壓縮成重點摘要",
-)
+# 跟 history.load_history **同一份**黑名單：這些是維運產物，拿來當標題會變成
+# 一整排「<command-name>」。先前這裡自己抄了一份而且少了四條（壓縮核對提示、
+# <task-notification>、<system-reminder>、舊的背景工作回報），「接管電腦上的
+# Claude」清單就會出現以它們為標題的 session。真相只留 history 那一份。
+from .history import _OPS_PREFIXES as _NOISE_PREFIX  # noqa: E402
 
 
 def _projects_dir() -> Path:
-    return Path.home() / ".claude" / "projects"
+    # 留成函式是給測試換接縫用（patch.object(sessions, "_projects_dir", …)）
+    return config.claude_projects_dir()
 
 
 def _head_scan(jf: Path) -> dict[str, Any] | None:
@@ -175,6 +175,40 @@ def scan_sessions(limit: int = 60, q: str = "", offset: int = 0) -> list[dict]:
         if len(out) >= limit:
             break
     return out
+
+
+def session_text(session_id: str, max_chars: int = 3000, keep: str = "head") -> str:
+    """把一個 session 的對話讀成一整段純文字（給模型看的，不是給人看的）。
+
+    `keep="head"` 從頭累積到上限就停（取標題用）；`keep="both"` 讀完整段之後取
+    頭尾各半、中間以 `[...]` 接起——交接稿要的正是這兩端：開頭是「原本要做什麼」，
+    結尾是「現在做到哪」，中間的過程反而最不重要。
+
+    走 `history.load_history` 而不是自己開 jsonl：那邊已經濾掉壓縮摘要與各種維運
+    注入（續跑提示、task-notification、skill 全文），不濾的話交接稿會被那些東西灌滿。
+    """
+    # 直接照 session_id 找檔，不經過對話登記表：`/search` 要索引的正是那些
+    # **還沒被接管**的 session，它們不在登記表裡（先前寫成查表，那條路整個是空的）。
+    from .history import _parse_lines, _session_file
+
+    jf = _session_file(session_id)
+    if jf is None:
+        return ""
+    try:
+        with jf.open(encoding="utf-8", errors="replace") as f:
+            msgs = _parse_lines(f, 200 if keep == "head" else 0)
+    except OSError:
+        return ""
+    parts = [f"{m.get('role', '')}: {m['text']}" for m in msgs if m.get("text")]
+    if not parts:
+        return ""
+    text = "\n".join(parts)
+    if len(text) <= max_chars:
+        return text
+    if keep == "head":
+        return text[:max_chars]
+    half = max_chars // 2
+    return text[:half] + "\n\n[...]\n\n" + text[-half:]
 
 
 def session_cwd(session_id: str) -> str:

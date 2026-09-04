@@ -11,7 +11,8 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
 
 import config
 
-from .runner import iter_messages
+from . import models
+from .mailbox import iter_messages
 
 TITLE_PROMPT = (
     "用不超過 12 個字幫這段對話取一個貼切的中文短標題，"
@@ -46,7 +47,7 @@ def _purge_title_shell(meta_sid: str | None) -> None:
     """
     if not meta_sid:
         return
-    for jf in (Path.home() / ".claude" / "projects").glob(f"*/{meta_sid}.jsonl"):
+    for jf in config.claude_projects_dir().glob(f"*/{meta_sid}.jsonl"):
         try:
             if not _session_has_body(jf):
                 jf.unlink()
@@ -57,10 +58,20 @@ def _purge_title_shell(meta_sid: str | None) -> None:
 
 async def ask_haiku(prompt: str) -> str:
     """一次性、不留 session 檔的輕量呼叫（標題生成用）。"""
+    return await ask_once(prompt, models.META_MODEL)
+
+
+async def ask_once(prompt: str, model: str | None = None) -> str:
+    """一次性、不留 session 檔的呼叫。`model=None` 交給 CLI 用帳號預設。
+
+    標題生成用 Haiku（快又便宜）；交接稿這種**品質重於成本**的則傳這條對話自己的
+    模型進來。`no-session-persistence` 讓它不寫逐字稿，否則每取一次標題就在
+    `~/.claude/projects` 多一個空殼 session，`/sessions` 清單會被灌爆。
+    """
     opts = ClaudeAgentOptions(
         cwd=str(config.DEFAULT_CWD),
         cli_path=config.CLAUDE_CLI,
-        model="claude-haiku-4-5-20251001",
+        model=model,
         permission_mode="bypassPermissions",
         extra_args={"no-session-persistence": None},
     )

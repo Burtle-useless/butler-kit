@@ -2,15 +2,27 @@
 
 沿用 cc-bot 的 ChannelState 設計，但拿掉所有 Discord 專屬欄位
 （_live_msg / _sidebar / _named），並把 channel id(int) 換成 conv_id(str)。
+
+**持久化的唯一真相在記憶體，檔案只是 write-through。** 2026-09-02 之前這裡是
+「每次都讀整份檔→改一筆→整份寫回」，而讀檔任何失敗都回空 dict：`load_history`／
+`search`／`scan_sessions` 在別的執行緒讀同一個 `session.json`，主執行緒同時
+`os.replace` 換檔的那一瞬間讀到 Windows 的 PermissionError → 下一次 persist 就把
+**所有對話的 session 對應**寫成只剩這一條。`util.read_text_with_retry` 為了同一件事
+早就寫好、八個模組在用，唯獨這裡沒用。現在：第一次用時讀一次（撞鎖就重試，真的
+壞掉才隔離），之後只改記憶體並整份寫出，讀失敗**絕不**寫回。
 """
 from __future__ import annotations
 
 import json
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import config
-from util import atomic_write_text
+from util import atomic_write_text, read_text_with_retry
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -31,7 +43,6 @@ class ConvState:
     forked_from: str | None = None
     model: str | None = None                  # 對話覆寫模型（None＝跟隨帳號預設）
     effort: str | None = None                 # 對話覆寫思考程度（None＝跟隨帳號預設）
-    wt: dict | None = None                    # worktree 資訊（path/branch/base/repo/prev_cwd）
     ctx_tokens: int = 0                       # 最近一次 result 回報的 context 用量
     # 下面兩個是每回合結束時向 SDK 問來的權威值（見 runner 的 get_context_usage）。
     # 不進持久化：它們是模型屬性、每回合都會重問，重啟後第一回合前先用估算頂著。
@@ -79,29 +90,72 @@ def eff_effort(state: ConvState) -> str | None:
     return state.effort or default_effort
 
 
-# ── Session 持久化 ───────────────────────────────────────────────────────────
-def _load_map() -> dict:
-    try:
-        return json.loads(config.SESSION_FILE.read_text(encoding="utf-8"))
-    except Exception:
+# ── 兩份 JSON 的讀寫（session 對應與標題共用）──────────────────────────────────
+def _read_json_map(path: Path) -> dict:
+    """讀一份 JSON dict。檔案不存在＝空；撞鎖就重試；真的壞掉才隔離。
+
+    三種失敗要分開對待，混在一起就是資料遺失的來源：
+    - 不存在：第一次啟動，空的沒問題。
+    - PermissionError（重試到底仍失敗）：往上拋，讓這次操作失敗。**絕不能**回空
+      dict——呼叫端接著寫回去就等於把整份檔清掉。
+    - JSON 壞掉：把壞檔改名留證據（`.corrupt-時間戳`），從空的開始。內容已經
+      讀不回來了，留著只會讓每一次讀都炸。
+    """
+    if not path.exists():
         return {}
+    text = read_text_with_retry(path)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        quarantine = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+        try:
+            path.replace(quarantine)
+        except OSError:
+            pass
+        log.error("%s 不是合法 JSON，已隔離到 %s，從空的開始", path.name, quarantine.name)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json_map(path: Path, data: dict, **dump_kw) -> None:
+    try:
+        atomic_write_text(path, json.dumps(data, ensure_ascii=False, **dump_kw))
+    except Exception:
+        # 寫不進去不能悄悄吞：記憶體裡的真相還在，下次 persist 會再試，
+        # 但至少要在 log 留一行，不然「重啟後設定變回預設」永遠查不到原因
+        log.exception("寫入 %s 失敗", path.name)
+
+
+# ── Session 持久化 ───────────────────────────────────────────────────────────
+_map: dict | None = None      # conv_id → 持久化欄位；None＝還沒從檔案載入
+
+
+def _load_map() -> dict:
+    """conv_id → 持久化紀錄。第一次呼叫才讀檔，之後回記憶體那份。
+
+    給 history／sessions／search 唯讀用的也是這一份——它們在別的執行緒跑，
+    讀一個只在事件迴圈上被改的 dict 沒有問題；先前它們各自讀檔，才有撞鎖的機會。
+    """
+    global _map
+    if _map is None:
+        _map = _read_json_map(config.SESSION_FILE)
+    return _map
+
+
+def _flush_map() -> None:
+    _write_json_map(config.SESSION_FILE, _load_map())
 
 
 def persist(state: ConvState) -> None:
-    """整包存：session_id + model/effort/cwd/wt，重啟後設定不會變回預設。"""
-    try:
-        data = _load_map()
-        data[state.conv_id] = {
-            "session_id": state.session_id,
-            "forked_from": state.forked_from,
-            "model": state.model,
-            "effort": state.effort,
-            "cwd": str(state.cwd or config.DEFAULT_CWD),
-            "wt": state.wt,
-        }
-        atomic_write_text(config.SESSION_FILE, json.dumps(data, ensure_ascii=False))
-    except Exception:
-        pass
+    """整包存：session_id + model/effort/cwd，重啟後設定不會變回預設。"""
+    _load_map()[state.conv_id] = {
+        "session_id": state.session_id,
+        "forked_from": state.forked_from,
+        "model": state.model,
+        "effort": state.effort,
+        "cwd": str(state.cwd or config.DEFAULT_CWD),
+    }
+    _flush_map()
 
 
 _states: dict[str, ConvState] = {}
@@ -114,11 +168,6 @@ def get_state(conv_id: str) -> ConvState:
         return st
     rec = _load_map().get(conv_id) or {}
     cwd = Path(rec.get("cwd") or config.DEFAULT_CWD)
-    wt = rec.get("wt")
-    # worktree 目錄若已被外部刪除，降級回原本的工作目錄，否則 build_options 會拿到死路徑
-    if wt and not Path(wt.get("path", "")).is_dir():
-        cwd = Path(wt.get("prev_cwd") or config.DEFAULT_CWD)
-        wt = None
     if not cwd.is_dir():
         cwd = config.DEFAULT_CWD
     st = ConvState(
@@ -128,26 +177,21 @@ def get_state(conv_id: str) -> ConvState:
         forked_from=rec.get("forked_from"),
         model=rec.get("model"),
         effort=rec.get("effort"),
-        wt=wt,
     )
     _states[conv_id] = st
     return st
 
 
-def all_states() -> dict[str, ConvState]:
-    """目前記憶體中的所有對話狀態（唯讀用途）。"""
-    return dict(_states)
-
-
 # ── 標題 ─────────────────────────────────────────────────────────────────────
 _TITLES_FILE = config.DATA_DIR / "titles.json"
+_titles: dict[str, str] | None = None
 
 
 def _load_titles() -> dict[str, str]:
-    try:
-        return json.loads(_TITLES_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    global _titles
+    if _titles is None:
+        _titles = _read_json_map(_TITLES_FILE)
+    return _titles
 
 
 def get_title(conv_id: str) -> str | None:
@@ -155,12 +199,16 @@ def get_title(conv_id: str) -> str | None:
 
 
 def set_title(conv_id: str, title: str) -> None:
-    data = _load_titles()
-    data[conv_id] = title
-    try:
-        atomic_write_text(_TITLES_FILE, json.dumps(data, ensure_ascii=False, indent=1))
-    except Exception:
-        pass
+    _load_titles()[conv_id] = title
+    _write_json_map(_TITLES_FILE, _load_titles(), indent=1)
+
+
+def reset_cache() -> None:
+    """丟掉記憶體裡的兩份快取，下次用時重新讀檔。只給測試與換 DATA_DIR 用。"""
+    global _map, _titles
+    _map = None
+    _titles = None
+    _states.clear()
 
 
 # ── 對話列表 ─────────────────────────────────────────────────────────────────
@@ -177,7 +225,7 @@ def list_conversations() -> list[dict]:
         known.setdefault(cid, {"conv_id": cid, "session_id": st.session_id})
 
     out = []
-    claude_home = Path.home() / ".claude" / "projects"
+    claude_home = config.claude_projects_dir()
     for cid, rec in known.items():
         mtime = 0.0
         sid = rec.get("session_id")
@@ -205,15 +253,9 @@ def delete_conversation(conv_id: str) -> bool:
     if conv_id in data:
         existed = True
         data.pop(conv_id)
-        try:
-            atomic_write_text(config.SESSION_FILE, json.dumps(data, ensure_ascii=False))
-        except Exception:
-            pass
+        _flush_map()
     titles = _load_titles()
     if conv_id in titles:
         titles.pop(conv_id)
-        try:
-            atomic_write_text(_TITLES_FILE, json.dumps(titles, ensure_ascii=False, indent=1))
-        except Exception:
-            pass
+        _write_json_map(_TITLES_FILE, titles, indent=1)
     return existed

@@ -30,6 +30,21 @@ STARTED_AT = datetime.now()
 RESTART_PS1: Path = config.SERVER_DIR.parent / "restart_butler.ps1"
 
 
+def busy_convs() -> list[str]:
+    """現在有哪幾條對話正在跑。
+
+    延遲 import：`app.py` 在模組層掛這個 router，反過來在模組層 import 它會繞成
+    一圈。
+
+    這個問題以前是用猜的——重啟腳本每兩秒問一次 `latest_seq`，連續四秒沒變就
+    當作沒人在忙。那是個代理指標，而且它猜錯的時候代價很大：2026-08-23 使用者
+    按下重啟時有一條對話正在讀 PDF，腳本等滿 60 秒上限後照樣硬幹，那一輪被腰斬。
+    這裡回的是事實。
+    """
+    from .app import worker
+    return [c for c, t in worker.running.items() if t is not None and not t.done()]
+
+
 def _uptime_text(sec: float) -> str:
     """把秒數講成人看得懂的長度。控制台要的是「跑多久了」不是幾點啟動。"""
     if sec < 60:
@@ -74,7 +89,7 @@ async def status(_: str = Depends(require_token)) -> dict[str, Any]:
     """服務現況。`git` 要開子行程，包 to_thread 免得卡住事件迴圈。
 
     回兩個版本而不是一個。原本只回「現在的 HEAD」，那答的是**磁碟上**的版本，
-    不是**正在跑**的版本：改完程式碼一 commit，控制台立刻顯示新的雜湊，
+    不是**正在跑**的版本：助理改完程式碼一 commit，控制台立刻顯示新的雜湊，
     可是行程裡跑的還是舊的那份——那行字於是專門在使用者最需要它的時候說謊
     （「我到底按過重啟了沒？」）。現在跑的那份看 [BOOT_HEAD]，它在行程啟動時
     就固定了；兩者不同就是「有東西還沒生效」。
@@ -92,6 +107,9 @@ async def status(_: str = Depends(require_token)) -> dict[str, Any]:
         "subject": BOOT_HEAD["subject"],
         "latest_commit": latest["commit"],
         "latest_subject": latest["subject"],
+        # 按重啟之前要知道會不會踩到正在跑的事。這個數字直接決定按鈕的文案：
+        # 沒事在跑就是「約半分鐘」，有事在跑就得先說清楚它會被切斷。
+        "busy_convs": busy_convs(),
     }
 
 
@@ -118,12 +136,28 @@ async def restart(_: str = Depends(require_token)) -> dict[str, Any]:
             ],
             cwd=str(RESTART_PS1.parent),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            # 不繼承這邊的控制台，也不要因為父行程被殺就跟著死
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            # 不繼承這邊的控制台，也不要因為父行程被殺就跟著死。
+            # CREATE_NO_WINDOW 是 2026-08-23 補的：伺服器自己是隱藏跑的，
+            # 沒有控制台可繼承，子行程於是自己開一個**看得見的**——按下重新啟動
+            # 就跳一個黑窗出來。腳本裡 WMI 那層也要各自設一次（見 restart_butler.ps1），
+            # 這個旗標只管得到直接生的這一個
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            ),
         )
 
+    busy = busy_convs()
     await asyncio.to_thread(_spawn)
     return {
         "ok": True,
-        "note": "重啟中。等現在這輪講完才會動手，之後連線會自己接回來。",
+        # 有事在跑就要說：腳本會先等，等不到就硬幹，而那整段時間畫面上什麼都
+        # 不會發生。不講的話按鈕看起來就是壞的（使用者 2026-08-23 的原話：
+        # 「重新啟動剛剛不是說沒反饋嗎　現在還是沒有」——其實是它在等）。
+        "busy_convs": busy,
+        "note": (
+            f"助理還在做 {len(busy)} 件事，腳本會等它們告一段落才動手，"
+            "最多等一分鐘。"
+            if busy else
+            "重啟中，之後連線會自己接回來。"
+        ),
     }

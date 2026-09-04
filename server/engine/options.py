@@ -11,7 +11,7 @@ from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 import config
 from protocol import Frontend
 
-from . import agenda_tools, file_tools, kanban_tools, location, persona
+from . import persona
 from .safety import make_pretool_hook
 from .state import ConvState, eff_effort, eff_model
 
@@ -85,9 +85,10 @@ _RULE_AGENDA = (
 # 模型預設會把成品留在磁碟上、回一句「檔案在 D:\... 」就結束，
 # 而使用者人不在電腦前，那個路徑對他毫無用處。
 _RULE_SENDFILE = (
-    "你做出來的檔案他在手機上看不到，光報路徑等於沒給。"
+    "他在手機上時，你做出來的檔案他看不到，光報路徑等於沒給。"
     "圖片、報告、匯出的資料這種他會想直接看或存起來的東西，做完就用 send_file 傳給他，"
     "不用先問他要不要。純程式碼或設定檔就不必傳，貼在回覆裡比較快。"
+    "他在電腦前面時，路徑講清楚就行，那台電腦就在他手上，不必再傳一次。"
 )
 
 # 5. 位置。
@@ -144,11 +145,31 @@ _RULE_KANBAN = (
 # 這條兩份 append 都要有——前綴是伺服器蓋的，不解釋的話模型會把它當成
 # 使用者打的字複誦出來。
 _RULE_TIME = (
-    "每則使用者訊息前面的方括號時間，例如 [08/21 週四 11:04]，"
-    "是那則訊息送出的時間，系統加的，他自己看不到。"
+    "每則使用者訊息前面的方括號，例如 [08/21 週四 11:04 手機]，是系統加的，他自己看不到。"
+    "前半是那則訊息送出的時間。"
     "要講時間就照這個算，不要複誦它、不要在自己的回覆裡模仿這個格式。"
     "沒有這個時間的舊訊息就是算不出來，這種時候不要說昨天、上次、前幾天這種話，"
     "改說前面、稍早、剛才。寧可講得模糊，也不要講一個聽起來精確但其實是猜的時間。"
+)
+
+# 9. 來源：這則話是從哪一端送進來的。
+#
+# 前綴後半的「手機」／「電腦」由 transport 依請求的 `client` 欄位蓋上（見
+# `transport.app._SRC_NAMES`）。附的 Android App 不送這個欄位，所以預設一律是
+# 「手機」；自己另外寫一個桌面或網頁前端時送 `client: "desktop"` 就會變成「電腦」。
+#
+# 規則綁在**每則訊息**而不是連線上：他可能手機打到一半走到電腦前，
+# 以最後一則的來源為準才是對的。
+#
+# 這條講的是**平台事實**（螢幕多大、路徑點不點得開），不是語氣。語氣在人格檔裡。
+_RULE_SOURCE = (
+    "方括號後半是他從哪一端送的。"
+    "標「手機」＝小螢幕，話要短，長內容先給結論再展開，"
+    "不要動不動就用條列或表格排版，檔案路徑跟程式碼貼給他也沒有用。"
+    "標「電腦」＝他坐在電腦前面用大視窗看，話可以長、可以用條列跟表格、"
+    "可以貼路徑跟程式碼區塊，也可以直接叫他去開某個檔案或按某個按鈕。"
+    "沒標來源的是舊訊息或系統自動訊息，一律當手機處理。"
+    "同一條對話裡這個標記會變，每次都看最新那則，不要用前面的印象當作他現在人在哪。"
 )
 
 
@@ -180,7 +201,7 @@ def _amnesia_rule() -> str:
 
 # 助理對話：人格 + 全部核心規則。
 SYSTEM_APPEND = (
-    persona.load(config.PERSONA) + _amnesia_rule() + _RULE_TIME
+    persona.load(config.PERSONA) + _amnesia_rule() + _RULE_TIME + _RULE_SOURCE
     + _RULE_AGENDA + _RULE_KANBAN + _RULE_SENDFILE + _RULE_WHERE
     + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
 )
@@ -195,34 +216,34 @@ SYSTEM_APPEND = (
 # 工作對話開著只會讓模型在「幫我記一下這個 bug」的時候把東西寫進記帳本。
 # 其餘一律交還給 Claude Code 的預設行為，這才是「純工作」該有的樣子。
 WORK_APPEND = (
-    persona.load(config.WORK_PERSONA) + _RULE_TIME
+    persona.load(config.WORK_PERSONA) + _RULE_TIME + _RULE_SOURCE
     + _RULE_SENDFILE + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
 )
 
 
+# PreToolUse hook 要攔哪些工具（工具名的 regex）。
+#
+# **抽成常數是為了讓測試能直接驗。** 這裡跟 `safety.needs_confirm` 是一組的：
+# needs_confirm 寫對了但這裡漏掉工具名，整道確認防線就是空的——hook 根本不會被
+# 呼叫，而且沒有任何錯誤訊息，表現出來只是「破壞性指令沒跳確認就跑了」。
+PRETOOL_MATCHER = "Bash|PowerShell|AskUserQuestion"
+
+
 def append_for(state: ConvState) -> str:
-    """這條對話該套哪一份 system prompt。助理＝全套，其餘＝工作精簡版。"""
-    return SYSTEM_APPEND if state.conv_id == config.PRIMARY_CONV else WORK_APPEND
+    """這條對話該套哪一份 system prompt。
+
+    誰用哪一份由 `profiles` 決定：助理（全套）綁死一條固定對話，其餘依 conv_id
+    前綴查註冊表，查不到就是預設的工作精簡版。
+    """
+    # 函式內 import：profiles 在載入時要拿這裡的兩份 append，頂端互相 import 會繞成一圈
+    from . import profiles
+    return profiles.resolve(state.conv_id).append
 
 
 def servers_for(state: ConvState) -> dict:
-    """這條對話該掛哪些自製工具。
-
-    行事曆／鬧鐘／記帳只給助理——那是生活資料，工作對話開著只會讓模型在
-    「幫我記一下這個 bug」的時候把東西寫進他的記帳本。
-    傳檔兩邊都要：工作做出來的圖表與報告一樣得送到他手機上。
-    傳檔工具是**每個對話一份**（見 file_tools.server_for），這樣送出去的檔案
-    才知道自己是從哪一段對話出來的。
-    """
-    files = file_tools.server_for(state.conv_id)
-    if state.conv_id == config.PRIMARY_CONV:
-        return {
-            agenda_tools.SERVER_NAME: agenda_tools.SERVER,
-            kanban_tools.SERVER_NAME: kanban_tools.SERVER,
-            location.SERVER_NAME: location.SERVER,
-            file_tools.SERVER_NAME: files,
-        }
-    return {file_tools.SERVER_NAME: files}
+    """這條對話該掛哪些自製工具。同樣交給 `profiles`，理由見 append_for。"""
+    from . import profiles
+    return profiles.resolve(state.conv_id).servers(state)
 
 
 def sanitize_append(text: str) -> str:
@@ -264,7 +285,7 @@ def build_options(state: ConvState, frontend: Frontend) -> ClaudeAgentOptions:
         # bypassPermissions 也照樣觸發、且 permissionDecision="deny" 能真正擋下工具。
         permission_mode="bypassPermissions",
         hooks={"PreToolUse": [HookMatcher(
-            matcher="Bash|PowerShell|AskUserQuestion",
+            matcher=PRETOOL_MATCHER,
             hooks=[make_pretool_hook(state, frontend)],
         )]},
         # 行事曆／鬧鐘／記帳走 in-process MCP：跟服務同一個進程，沒有 IPC 開銷，

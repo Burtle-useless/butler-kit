@@ -9,6 +9,8 @@ import ipaddress
 import os
 import socket
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Final
 
@@ -37,11 +39,51 @@ os.environ["CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL"] = "1"
 
 # ── 路徑 ─────────────────────────────────────────────────────────────────────
 SERVER_DIR: Final[Path] = Path(__file__).resolve().parent
-DATA_DIR: Final[Path] = SERVER_DIR / "data"
+
+
+def _data_dir() -> Path:
+    """資料目錄。正式服務用 `server/data`；測試與診斷腳本一律用暫存目錄。
+
+    兩條路可以指到別處：`BUTLER_DATA_DIR` 明確指定；或者**執行的腳本本身在
+    `tests/` 底下**就自動給一個暫存目錄。後者是硬擋不是禮貌——一支端對端測試
+    曾經把假對話寫進正式的 session.json，而回合診斷檔裡有一半是測試紀錄。
+    測試不該有辦法碰到正式資料。
+    """
+    override = os.environ.get("BUTLER_DATA_DIR")
+    if override:
+        return Path(override)
+    entry = Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else None
+    if entry is not None and entry.parent.name == "tests":
+        d = Path(tempfile.mkdtemp(prefix="butler-test-"))
+        os.environ["BUTLER_DATA_DIR"] = str(d)      # 子進程也用同一個
+        return d
+    return SERVER_DIR / "data"
+
+
+DATA_DIR: Final[Path] = _data_dir()
 SESSION_FILE: Final[Path] = DATA_DIR / "session.json"
 DEVICES_FILE: Final[Path] = DATA_DIR / "devices.json"
 SCHEDULES_FILE: Final[Path] = DATA_DIR / "schedules.json"
 DEFAULT_CWD: Final[Path] = Path(os.environ.get("BUTLER_CWD") or Path.home())
+# dev_console.py 用哪一條對話；人格測試要用乾淨的新對話時從環境變數指定。
+DEV_CONSOLE_CONV: Final[str] = os.environ.get("BUTLER_CONV") or "dev-console"
+
+
+def claude_projects_dir() -> Path:
+    """Claude Code 的逐字稿目錄：每個 session 一個 `<專案>/<session_id>.jsonl`。
+
+    history／sessions／search／meta／local_usage 都要掃它，路徑只在這裡寫一次。
+    做成函式而不是常數：測試用 `patch.object(Path, "home", …)` 把它指到暫存目錄，
+    import 期就算死的話那個接縫就沒了。
+    """
+    return Path.home() / ".claude" / "projects"
+
+
+def butler_token() -> str:
+    """開發期固定 device token（非必要）。設了就優先於 devices.json 裡的註冊裝置，
+    見 transport.auth.ensure_token。每次呼叫都重讀環境變數，理由同上。"""
+    return (os.environ.get("BUTLER_TOKEN") or "").strip()
+
 
 # 助理專屬的那條對話。App 的助理分頁固定看這一條，其餘 conv_id 都屬於工作區分頁。
 # 兩邊是**不同用途**：助理有人格與生活工具（行事曆、記帳），工作區分頁純工作。
@@ -214,6 +256,12 @@ MAX_BUFFER_SIZE: Final[int] = 64 * 1024 * 1024        # stream-json 解析 buffe
 MAX_CLIENTS: Final[int] = 3
 CLIENT_IDLE_TIMEOUT: Final[int] = 900                 # 閒置逾時：超過即回收該對話的 client
 INACTIVITY_TIMEOUT: Final[int] = 600                  # CC 連續無輸出超過此秒數才視為卡死
+# 有工具在跑（送出 ToolUseBlock、還沒收到它的 ToolResultBlock）期間的閒置上限。
+# 一個沒輸出的工具（大檔下載、CC 自己的 Bash 上限也是 600 秒）滿 600 秒
+# 就被當成卡死、整個 CLI 連同背景工作一起被殺——那不是卡死，是在等工具。
+TOOL_INACTIVITY_TIMEOUT: Final[int] = 1800
+# 判定逾時後先 interrupt() 讓 CLI 自己收尾，等這麼多秒收不了才真的殺進程。
+INTERRUPT_GRACE_SEC: Final[float] = 5.0
 MAX_EMPTY_RETRY: Final[int] = 3                       # 空回覆重試上限
 MAX_AUTO_CONTINUE: Final[int] = 2                     # 未打完成標記時的自動續跑上限
 # 這裡原本有 NOTIFY_AFTER_SEC=60（「跑超過這麼久才推播」）。已移除：短回合正是

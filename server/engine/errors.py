@@ -3,10 +3,19 @@
 分類的目的不是為了漂亮的錯誤訊息，是為了決定**善後動作**：
 哪些該重試、哪些該丟掉 client 重生、哪些該清掉 session 重來。
 把這三件事搞錯，症狀會是「重新登入也救不回的 401」或「越重試越糟」。
+
+**額度用盡是錯誤，不是回覆。** 2026-09-02 之前 CLI 回「You've hit your session
+limit · resets 3pm」這段文字時，runner 把它當一般回覆定稿、`_auto_continue` 再補跑
+一輪、手機推播「做完了」——使用者看到的是助理頂著自己的臉講一句英文。SDK 其實有
+結構化訊號：`RateLimitEvent(status="rejected", resets_at=…)` 與 `ResultMessage.is_error`，
+runner 現在認這兩個，這裡只負責把它們變成 `CCError`（帶 `resets_at`）。
 """
 from __future__ import annotations
 
 import asyncio
+import re
+import time
+from datetime import datetime, timedelta
 
 ErrKind = str
 
@@ -20,7 +29,10 @@ def classify(err: str) -> ErrKind:
         return "CONTEXT_FULL"
     if "529" in s or "overloaded" in s:
         return "OVERLOADED"
-    if "429" in s or "rate_limit" in s or "rate limit" in s:
+    # 「hit your … limit」是 CLI 額度用盡時放進回覆文字的句型（session limit／
+    # usage limit／weekly limit 都是這個形狀），跟 API 的 429 是同一件事。
+    if ("429" in s or "rate_limit" in s or "rate limit" in s
+            or "hit your" in s and "limit" in s or "usage limit" in s):
         return "RATE_LIMIT"
     if "failed to start claude" in s or "winerror 267" in s or "目錄名稱無效" in s:
         return "STARTUP"
@@ -55,6 +67,55 @@ USER_FACING: dict[str, str] = {
 }
 
 
+# 額度用盡時，回復時刻在多久以內就把訊息留在佇列裡等它自動重跑。官方終端機只叫你等，
+# 但助理是在手機上用的：人送一句話出門，回來看到「額度用完」比看到答案糟得多。
+# 超過這個時間（例如週額度要等三天）就不等了，人自己決定。
+AUTO_RESUME_MAX_SEC = 6 * 3600
+
+
+_RESETS_RE = re.compile(r"resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.IGNORECASE)
+
+
+def parse_resets_at(text: str, now: float | None = None) -> float | None:
+    """從 CLI 的限流文字（「You've hit your session limit · resets 3:30pm (Asia/Taipei)」）
+    解析回復時刻。CLI 通常會另外送 RateLimitEvent 帶 resets_at，這是它沒送時的後備：
+    沒有時刻就沒辦法自動續跑，只能叫人自己回來。
+
+    時間當本機時區（那串文字本來就是照本機時區印的）。今天的那個時刻已經過了
+    就算明天。
+    """
+    m = _RESETS_RE.search(text or "")
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    ampm = (m.group(3) or "").lower()
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    if ampm == "am" and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    base = datetime.fromtimestamp(now if now is not None else time.time())
+    target = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target.timestamp() <= base.timestamp():
+        target = target + timedelta(days=1)
+    return target.timestamp()
+
+
+def reset_label(resets_at: float | None) -> str:
+    """把 epoch 秒變成「15:30」或「明天 09:00」這種人看的字。"""
+    if not resets_at:
+        return ""
+    dt = datetime.fromtimestamp(resets_at)
+    today = datetime.now().date()
+    if dt.date() == today:
+        return f"{dt:%H:%M}"
+    if (dt.date() - today).days == 1:
+        return f"明天 {dt:%H:%M}"
+    return f"{dt:%m/%d %H:%M}"
+
+
 class CCError(Exception):
     """已分類的 CC 錯誤。
 
@@ -62,15 +123,26 @@ class CCError(Exception):
     使 `__post_init__` 裡 zero-arg 的 `super()` 指向**舊**的類別，
     實例化時直接拋 "obj is not an instance or subtype of type"。
     Exception 子類就照傳統寫法寫，別為了風格改。
+
+    `resets_at`：額度何時回復（epoch 秒），只有 RATE_LIMIT 且 CLI 有給時才有。
+    transport 靠它決定要不要把訊息留在佇列裡等到那時候自動重跑。
     """
 
-    def __init__(self, kind: ErrKind, raw: str) -> None:
+    def __init__(self, kind: ErrKind, raw: str, resets_at: float | None = None) -> None:
         self.kind = kind
         self.raw = raw
+        self.resets_at = resets_at
         super().__init__(f"{kind}: {raw[:200]}")
 
     @property
     def user_msg(self) -> str:
+        if self.kind == "RATE_LIMIT" and self.resets_at:
+            when = reset_label(self.resets_at)
+            wait = self.resets_at - time.time()
+            if 0 < wait <= AUTO_RESUME_MAX_SEC:
+                return f"用量到上限了，{when} 回復後我會自動接著做。"
+            if wait > 0:
+                return f"用量到上限了，{when} 才會回復。"
         return USER_FACING.get(self.kind, USER_FACING["UNKNOWN"])
 
     @property

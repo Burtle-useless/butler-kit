@@ -17,8 +17,7 @@ from .events import Event
 
 AskKind = Literal[
     "confirm_destructive",  # 破壞性指令確認，raw 必須帶指令原文
-    "choose",               # AskUserQuestion 的選項題
-    "text",                 # 自由輸入
+    "choose",               # 選項題（[[ASK:]] 標記抽出來的，見 engine.fold）
 ]
 
 
@@ -47,7 +46,6 @@ class AskRequest:
 @dataclass(frozen=True, slots=True)
 class AskResponse:
     choice_id: str
-    text: str | None = None             # kind="text" 時的自由輸入內容
 
 
 @runtime_checkable

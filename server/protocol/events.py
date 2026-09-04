@@ -13,10 +13,17 @@ from __future__ import annotations
 import itertools
 import time
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, get_args
 
 EventType = Literal[
-    "turn.start",       # 回合開始：{"prompt": 使用者原文}
+    "turn.start",       # 回合開始：{"prompt": 使用者原文, "origin": "user"|"wake",
+                        #   "wake": dict}
+                        #   origin="wake"＝助理自己醒來的那一輪（背景工作跑完後
+                        #   CLI 原生開的週期，見 engine.turn.handle_wake），
+                        #   prompt 是空的；wake 帶最近剛結束的那件背景工作
+                        #   （形狀同 bg.state 的每一筆），對不上就是空 dict。
+                        #   畫面上該畫一行「背景工作『x』完成，助理接手」，
+                        #   不是使用者氣泡。
     "turn.end",         # 回合結束：{"ok": bool, "elapsed": float}
     "thinking.delta",   # 思考逐字：{"d": str}
     "text.delta",       # 回覆逐字：{"d": str}
@@ -39,8 +46,19 @@ EventType = Literal[
                         #   phase="compacting" 代表這段時間在整理記憶，不是在回話
     "error",            # 錯誤：{"kind","detail","retryable","attempt","max"}
     "notify",           # 長任務完成，觸發推播：{"title","body"}
+    "bg.state",         # 背景工作的當下全貌：{"tasks": list[dict]}
+                        #   每筆帶 id／desc／status／started_at／finished_at／
+                        #   last_tool／tokens／tool_uses／summary（見 BgTask.to_wire）。
+                        #   同一份清單在回合進行中由 status.bg 帶著走，但那個
+                        #   隨回合結束而停，而背景工作不會停。這一則補的就是
+                        #   回合外的變化，畫面上那幾張卡片靠它才留得住。
+                        #   已完成的也在裡面，直到使用者下次發言才收起來。
     "seq.gap",          # 續傳斷層，叫前端改拉 snapshot：{"from","to"}
-    "user.message",     # 使用者訊息回音（多裝置同步的基礎）：{"text","msg_id","queued"}
+    "user.message",     # 使用者訊息回音（多裝置同步的基礎）：
+                        #   {"text","msg_id","queued"}
+                        #   **只有人真的送出訊息時才發。** 助理自己醒來的那一輪
+                        #   （背景工作跑完後的 wake 回合）沒有任何使用者訊息，
+                        #   由 turn.start 的 origin="wake" 說明，不偽造一則發言。
     "message.taken",    # 排著的訊息被讀進這一輪了：{"msg_ids": list[str]}
     "message.dropped",  # 排著的訊息隨停止一起取消：{"msg_ids": list[str]}
     "agenda.changed",   # 行事曆／鬧鐘／記帳／課表有變動，叫 App 重拉並重排鬧鐘：{"what": str}
@@ -49,7 +67,15 @@ EventType = Literal[
                         #   kind="location" 時 App 抓一次位置後 POST 回來。
                         #   **靜默事件**：App 自己處理完自己回，不畫任何 UI，
                         #   使用者不會知道發生過（跟 ask.request 的差別就在這）。
+    "stream.reset",     # 伺服器重啟了，本地游標屬於上一個世代：前端清掉本地軌跡
+                        #   改用 snapshot 重建（hub.stream 在偵測到舊世代游標時發）。
+    "kanban.changed",   # 看板有變動（助理的工具或 App 的操作），叫另一端重拉。
 ]
+
+# 執行期用的集合。`Literal` 只在型別檢查時有意義，先前 `stream.reset` 與
+# `kanban.changed` 兩個事件伺服器發了幾個禮拜、兩端前端也都在接，這份清單卻
+# 沒有它們——沒有任何東西會炸。`make_event` 現在對照這個集合，漏登記的當場出聲。
+EVENT_TYPES: Final[frozenset[str]] = frozenset(get_args(EventType))
 
 # 這幾類事件量大且可合併，弱網下合併後再送，避免逐字事件把手機淹掉
 COALESCABLE: Final[frozenset[str]] = frozenset({"thinking.delta", "text.delta"})
@@ -69,7 +95,8 @@ class Event:
     def to_sse(self) -> dict[str, str]:
         """轉成 sse-starlette 需要的欄位形狀。"""
         import json
-        payload = {"conv_id": self.conv_id, "turn_id": self.turn_id, **self.data}
+        # ts 一起送：前端要畫訊息時間與日期分隔，不該各自拿本地時鐘猜
+        payload = {"conv_id": self.conv_id, "turn_id": self.turn_id, "ts": self.ts, **self.data}
         return {
             "id": str(self.seq),
             "event": self.type,
@@ -100,7 +127,10 @@ def make_event(
     type_: EventType,
     **data: Any,
 ) -> Event:
-    """建立一則事件並自動編號。"""
+    """建立一則事件並自動編號。事件名必須在 `EventType` 清單裡，否則直接炸——
+    那份清單是兩個前端對照的契約，漏登記的事件等於沒有文件。"""
+    if type_ not in EVENT_TYPES:
+        raise ValueError(f"未登記的事件型別：{type_!r}（加進 protocol/events.py 的 EventType）")
     return Event(
         seq=_seq.next(),
         conv_id=conv_id,

@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import config
+
 from .state import _load_map, get_title
 
 
@@ -48,7 +50,7 @@ def search(query: str, limit: int = 20) -> list[dict]:
     q = query.strip().lower()
     if not q:
         return []
-    claude_home = Path.home() / ".claude" / "projects"
+    claude_home = config.claude_projects_dir()
     out: list[dict] = []
     for conv_id, rec in _load_map().items():
         sid = rec.get("session_id")

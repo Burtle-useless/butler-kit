@@ -1,4 +1,4 @@
-"""助理與工作區的設定分流，以及方案額度的解析。
+"""助理與工作區的設定分流（engine.profiles）、兩份 append 的內容、方案額度的解析。
 
 分流這件事沒有測試就等於沒做——它的失效方式是「安靜地套錯 prompt」，
 不會拋錯、不會有日誌，只會讓工作對話突然開始嗆人。
@@ -10,9 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import config                                   # noqa: E402
-from engine import options, persona, plan_usage  # noqa: E402
-from engine.state import get_state              # noqa: E402
+import config                                            # noqa: E402
+from engine import options, persona, plan_usage, profiles  # noqa: E402
+from engine.state import get_state                       # noqa: E402
 
 FAILED: list[str] = []
 
@@ -73,6 +73,48 @@ def test_split() -> None:
     check("兩邊都有傳檔工具", "files" in qs and "files" in ws)
 
 
+def test_resolve() -> None:
+    """profile 解析：助理那條精確比對、其餘依 conv_id 前綴、最長前綴優先、"" 是預設。"""
+    print("\n[profile 解析]")
+    saved = dict(profiles._by_prefix)
+    try:
+        check("助理那條固定回 PRIMARY",
+              profiles.resolve(config.PRIMARY_CONV) is profiles.PRIMARY)
+        check("PRIMARY 的 append 就是全套", profiles.PRIMARY.append is options.SYSTEM_APPEND)
+        check("沒登記前綴的回預設", profiles.resolve("c1a2b3c4") is profiles.DEFAULT)
+        check("預設的 append 是工作版", profiles.DEFAULT.append is options.WORK_APPEND)
+        check("預設來源是手機", profiles.DEFAULT.src_default == "手機")
+
+        bot = profiles.Profile(name="bot", append="BOT", servers=lambda s: {},
+                               src_default="聊天室")
+        group = profiles.Profile(name="group", append="GROUP", servers=lambda s: {"g": 1})
+        profiles.register("bot:", bot)
+        profiles.register("bot:group:", group)
+        check("自訂前綴對得上", profiles.resolve("bot:dm:1") is bot)
+        check("最長前綴優先", profiles.resolve("bot:group:9") is group)
+        check("短前綴仍管其餘", profiles.resolve("bot:x") is bot)
+        check("不相干的 id 還是預設", profiles.resolve("c9") is profiles.DEFAULT)
+        # 助理那條不走前綴：登了一個蓋得到 "main" 開頭的前綴，助理那條仍是助理，
+        # 但 main2 這種不是（先前就是 == 比對，改成前綴會把工作對話套成助理）
+        m = profiles.Profile(name="m", append="M", servers=lambda s: {})
+        profiles.register("ma", m)
+        check("登了 ma 前綴，助理那條仍固定回 PRIMARY",
+              profiles.resolve(config.PRIMARY_CONV) is profiles.PRIMARY)
+        check("main2 不是助理（精確比對）",
+              profiles.resolve(config.PRIMARY_CONV + "2") is m)
+        # options 那兩個入口走的是同一張表
+        st = get_state("bot:group:7")
+        check("append_for 走 profile", options.append_for(st) == "GROUP")
+        check("servers_for 走 profile", options.servers_for(st) == {"g": 1})
+        # 重登記 "" 即覆寫預設
+        profiles.register("", m)
+        check("重登記空前綴即覆寫預設", profiles.resolve("zzz") is m)
+    finally:
+        profiles._by_prefix.clear()
+        profiles._by_prefix.update(saved)
+    check("還原後預設回來", profiles.resolve("zzz") is profiles.DEFAULT)
+
+
 def test_limits() -> None:
     print("\n[方案額度解析]")
     # 灌快取避開對外請求：這裡要驗的是解析與夾限，不是網路通不通
@@ -107,6 +149,7 @@ def test_limits() -> None:
 
 if __name__ == "__main__":
     test_split()
+    test_resolve()
     test_limits()
     print(f"\n{'全部通過' if not FAILED else '失敗：' + ', '.join(FAILED)}")
     sys.exit(1 if FAILED else 0)
