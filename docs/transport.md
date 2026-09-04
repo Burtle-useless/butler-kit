@@ -8,6 +8,9 @@ Android 9 以後預設**禁止明文 HTTP**。要放行，得把目的地寫進
 
 1. **它是編譯期資源。** 執行期換不了，改了就要重編 APK。
 2. **它不支援 CIDR。** 寫不了「整個 `100.64.0.0/10` 放行」，位址要逐一列出。
+3. **debug build 讀的是另一份**（`app/app/src/debug/res/xml/` 底下的同名檔），
+   而且是**整份覆蓋**不是合併。main 那份加了什麼，這裡也要加一次。它比 main
+   多的只有模擬器看出去的 `10.0.2.2`。
 
 所以「換一種連線方式」在 Android 這端必然是重編一次 APK，做成執行期的抽象層
 是白費力氣——多一層介面，換不到任何東西。
@@ -57,6 +60,20 @@ Android 這端什麼都不用改，走 https 不碰白名單，**不必重編 AP
 服務只綁本機，cloudflared 從 loopback 取件，連同一個區網的其他裝置都掃不到——
 比綁 tailnet 位址更緊。但通道的入口在公開網際網路上，**一定要在通道那層加驗證**
 （Cloudflare Access service token 之類），別只靠 device token。
+
+加了 Access 之後，App 要帶著服務憑證才進得去。憑證由 Gradle 從
+`app/local.properties` 讀進 `BuildConfig`，`net/AccessAuth.kt` 再把它加到每個
+請求的標頭上（含 SSE 與健康檢查）：
+
+```properties
+cfAccessClientId=xxxxx.access
+cfAccessClientSecret=yyyyy
+```
+
+**不要把憑證寫進原始碼。** 那個檔在 `.gitignore` 裡；留空的話一個標頭都不加，
+走 Tailscale 或區網的人完全不受影響。帶著憑證去連區網位址也無害（伺服器不認得
+就忽略），所以 AccessAuth 不按網址分流——分流要判斷「現在連的是哪一條」，
+而那個判斷會在使用者手動改主機欄位時出錯。
 
 **正式 HTTPS**
 
