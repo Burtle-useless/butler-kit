@@ -2,6 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 挑檔面板要列最近的相片。給不給都能用：沒權限就只剩「其他檔案…」那條路
+         （見 ui/PickerSheet.kt），所以不在啟動時要，等使用者自己按 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Android 13+ 通知要執行期授權；沒有它助理在背景做完事你不會知道 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

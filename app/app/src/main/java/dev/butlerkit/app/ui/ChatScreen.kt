@@ -142,9 +142,15 @@ fun ChatScreen(
 
     // 系統檔案挑選器。用 OpenMultipleDocuments 而不是 GetContent：
     // 前者能一次挑多張照片，且走 SAF 拿得到穩定的檔名。
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris -> uris.forEach(onAttach) }
+    // 挑檔改走自己的面板（最近相片格＋「其他檔案…」通到系統挑選器）。
+    // 系統挑選器本身還在，只是變成面板底下那顆按鈕，不再是唯一的路。
+    var showPicker by remember { mutableStateOf(false) }
+    if (showPicker) {
+        PickerSheet(
+            onPicked = { uris -> uris.forEach(onAttach) },
+            onDismiss = { showPicker = false },
+        )
+    }
 
     // 用 previewText 而不是 streaming：理由見它的說明，兩邊判斷不一致會讓
     // 捲動目標指向不存在的索引。
@@ -293,7 +299,7 @@ fun ChatScreen(
             onOpenDrawer = { scope.launch { drawerState.open() } },
             onResend = onSend,
             onNewConv = onNewConv,
-            onPickFile = { picker.launch(arrayOf("*/*")) },
+            onPickFile = { showPicker = true },
             onRemoveAttach = onRemoveAttach,
             onConvSettings = onConvSettings,
             onLoadOlder = onLoadOlder,
@@ -476,6 +482,23 @@ private fun ChatBody(
               if (showToBottom) {
                   ToBottomButton(onToBottom, Modifier.align(Alignment.BottomEnd))
               }
+            }
+        }
+
+        // 未答的提問釘一條在輸入框上方。
+        //
+        // 卡片本身在軌跡裡，後面繼續跑的工具會一行行把它往上推，推到看不見為止。
+        // 這一條不隨捲動走，點它就跳回卡片。
+        val pendingAsk = state.items.indexOfLast {
+            it is TraceItem.AskItem && it.pending
+        }
+        if (pendingAsk >= 0) {
+            val askTitle = (state.items[pendingAsk] as TraceItem.AskItem).req.title
+            // 頂端「載入更早」那一格也算一項，跳的時候要補進去
+            val head = if (state.hasMore) 1 else 0
+            val jumpScope = rememberCoroutineScope()
+            PendingAskBar(askTitle) {
+                jumpScope.launch { listState.animateScrollToItem(pendingAsk + head) }
             }
         }
 
