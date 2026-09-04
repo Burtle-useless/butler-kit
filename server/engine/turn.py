@@ -113,10 +113,25 @@ def _stamp(text: str, src: str = "") -> str:
     return f"[{now:%m/%d} 週{_WEEKDAYS[now.weekday()]} {now:%H:%M}{tail}] {text}"
 
 
-def stamp(text: str, src: str = "") -> str:
+def stamp(text: str, src: str = "", attachments: list[dict] | None = None) -> str:
     """`_stamp` 的公開入口。transport 的插話路徑也要蓋章——插進去的訊息跟排隊的
-    一樣是人說的話，模型一樣需要知道那是幾點、從哪一端來的。"""
-    return _stamp(text, src)
+    一樣是人說的話，模型一樣需要知道那是幾點、從哪一端來的。
+
+    附件在這裡才接成路徑清單，跟時間戳同一個道理：**模型看得到、人看不到**。
+    先前是 App 自己把「我從手機傳了這些檔案給你：<一串路徑>」拼進訊息本文再送出，
+    於是那串路徑變成使用者自己氣泡裡的文字。現在附件是訊息的結構化欄位，
+    畫面照欄位畫縮圖與檔案卡，只有送給模型的這一份才把路徑接上去。
+    """
+    body = _stamp(text, src)
+    if not attachments:
+        return body
+    lines = "\n".join(
+        f"- {a.get('path', '')}" for a in attachments if a.get("path")
+    )
+    if not lines:
+        return body
+    head = body if text.strip() else body.rstrip()
+    return f"{head}\n\n（附件，直接讀檔）\n{lines}"
 
 
 def ctx_limit(state: ConvState) -> int:
@@ -312,6 +327,7 @@ class TurnOutcome:
 
 async def handle_turn(
     text: str, state: ConvState, frontend: Frontend, src: str = "",
+    attachments: list[dict] | None = None,
 ) -> CCError | None:
     """處理一則使用者訊息，直到產出最終回覆或明確的錯誤。
 
@@ -327,7 +343,8 @@ async def handle_turn(
         await _maybe_compact(state, frontend, conv)
         # 只有真的使用者訊息蓋時間戳。續跑與重試的提示走別的路徑進來，
         # 那些是同一則訊息的內部往返，蓋上去只會讓歷史多出幾個假的時間點
-        await _run_with_recovery(_stamp(text, src), state, frontend, conv, out)
+        await _run_with_recovery(
+            stamp(text, src, attachments), state, frontend, conv, out)
     except CCError as e:
         # 出錯有自己的推播（error 事件 →「出狀況了」），不要再補一則「做完了」
         await _handle_error(e, state, frontend, conv)

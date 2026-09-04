@@ -60,7 +60,7 @@ async def main() -> None:
     # 每一輪拿到的來源。傳輸層有沒有把 client 一路帶到回合，只有這裡驗得到
     srcs: list[str] = []
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
         srcs.append(src)
         await gates.get()

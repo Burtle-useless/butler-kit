@@ -36,8 +36,8 @@ async def scenario() -> None:
     check("沒有佇列時回空清單", app_mod.worker.pending_of("不存在的對話") == [])
     check("空佇列回空清單", app_mod.worker.pending_of(CONV) == [])
 
-    await q.put(("m1", "先幫我看一下這個", "手機"))
-    await q.put(("m2", "順便把那個也跑了", "電腦"))
+    await q.put(("m1", "先幫我看一下這個", "手機", []))
+    await q.put(("m2", "順便把那個也跑了", "電腦", []))
     got = app_mod.worker.pending_of(CONV)
 
     check("兩則都拿得到", len(got) == 2, str(len(got)))
@@ -46,8 +46,9 @@ async def scenario() -> None:
     check("順序是舊到新", [r["msg_id"] for r in got] == ["m1", "m2"],
           str([r.get("msg_id") for r in got]))
     check("內容原封不動", got[0]["text"] == "先幫我看一下這個")
-    check("欄位就是 msg_id 與 text",
-          all(set(r) == {"msg_id", "text"} for r in got), str(got[0].keys()))
+    check("欄位就是 msg_id、text 與 attachments",
+          all(set(r) == {"msg_id", "text", "attachments"} for r in got),
+          str(got[0].keys()))
 
     print("\n[讀走之後就不該再出現]")
     await q.get()

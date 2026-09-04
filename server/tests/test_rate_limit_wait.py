@@ -74,7 +74,7 @@ async def test_auto_resume() -> None:
     calls: list[str] = []
     resets = time.time() + 0.4
 
-    async def fake_turn(text, state, frontend, src="") -> CCError | None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> CCError | None:
         calls.append(text)
         if len(calls) == 1:
             return CCError("RATE_LIMIT", "limit", resets_at=resets)
@@ -106,7 +106,7 @@ async def test_auto_resume() -> None:
         # 第二次再撞就不等了（只等一次）
         calls.clear()
 
-        async def always_limited(text, state, frontend, src="") -> CCError | None:
+        async def always_limited(text, state, frontend, src="", atts=None) -> CCError | None:
             calls.append(text)
             return CCError("RATE_LIMIT", "limit", resets_at=time.time() + 0.3)
 

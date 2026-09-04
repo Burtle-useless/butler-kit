@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
@@ -172,6 +173,39 @@ async def stream(request: Request, _: str = Depends(require_token)):
     return EventSourceResponse(gen())
 
 
+def _clean_attachments(raw: object) -> list[dict]:
+    """把 payload 的 attachments 洗成乾淨的清單。
+
+    **路徑一定要落在上傳目錄底下。** 這個欄位是客戶端給的，直接信任等於讓任何
+    配對過的裝置指定一個路徑叫模型去讀——那是整台電腦的任意檔案。上傳端點
+    （`/v1/uploads`）寫進去的檔本來就在 `files.UPLOAD_DIR`，超出範圍的一律丟掉。
+    """
+    from .files import UPLOAD_DIR
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw[:20]:      # 一則訊息掛二十個檔已經很多了，擋住無上限的清單
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        try:
+            p = Path(path).resolve()
+            p.relative_to(UPLOAD_DIR.resolve())
+        except (ValueError, OSError):
+            continue
+        if not p.is_file():
+            continue
+        out.append({
+            "name": str(item.get("name") or p.name)[:120],
+            "path": str(p),
+            "bytes": int(item.get("bytes") or p.stat().st_size),
+            "mime": str(item.get("mime") or "")[:80],
+        })
+    return out
+
+
 @app.post("/v1/conversations/{conv_id}/message")
 async def send_message(
     conv_id: str,
@@ -179,11 +213,13 @@ async def send_message(
     _: str = Depends(require_token),
 ) -> dict:
     text = str(payload.get("text") or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="text is required")
+    atts = _clean_attachments(payload.get("attachments"))
+    # 只有附件沒有文字是合法的（丟一張圖過來說「看這個」）
+    if not text and not atts:
+        raise HTTPException(status_code=400, detail="text or attachments required")
     src = _SRC_NAMES.get(str(payload.get("client") or ""), _SRC_NAMES[""])
     # 插話還是排隊、回音事件、進佇列，全在 worker.submit 裡
-    res = await worker.submit(conv_id, text, src)
+    res = await worker.submit(conv_id, text, src, atts)
     return {"queued": res.qsize, "conv_id": conv_id, "msg_id": res.msg_id,
             "steered": res.steered}
 

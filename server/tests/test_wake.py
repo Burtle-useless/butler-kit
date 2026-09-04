@@ -332,7 +332,7 @@ async def test_transport_queue() -> None:
         wakes.append(ticket)
         await gates.get()
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
 
     worker_mod.handle_wake = fake_wake

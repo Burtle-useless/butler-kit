@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
+from fastapi.responses import FileResponse
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
@@ -58,4 +60,22 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="空檔案")
     data = b"".join(chunks)
     path = await asyncio.to_thread(files.save_upload, name, data)
-    return {"path": str(path), "bytes": len(data)}
+    return {"path": str(path), "bytes": len(data), "name": path.name}
+
+
+@router.get("/v1/uploads/{name}")
+async def get_upload(name: str, _: str = Depends(require_token)) -> FileResponse:
+    """把上傳過的檔案取回來。App 拿它畫使用者自己傳出去那則訊息裡的縮圖。
+
+    先前沒有這條路：檔案上傳完就只剩一個電腦上的路徑，手機端要畫預覽只能靠
+    自己還留著的本地 Uri——換一台裝置、或重建畫面之後就沒有了，那則訊息裡的
+    圖片於是變成一行檔名。
+
+    **只認檔名、不吃路徑。** `name` 直接跟上傳目錄接起來之前先去掉任何目錄成分，
+    否則 `../../session.json` 就能把服務的狀態檔讀走。
+    """
+    safe = Path(name).name
+    fp = files.UPLOAD_DIR / safe
+    if not safe or not fp.is_file():
+        raise HTTPException(status_code=404, detail="找不到這個檔案")
+    return FileResponse(fp)

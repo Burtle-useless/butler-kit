@@ -82,7 +82,7 @@ async def test_submit_and_queue() -> None:
     prompts: list[str] = []
     srcs: list[str] = []
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
         srcs.append(src)
         await gate.get()
@@ -109,8 +109,8 @@ async def test_submit_and_queue() -> None:
     check("qsize 累計", r2.qsize == 1 and r3.qsize == 2, f"{r2.qsize} {r3.qsize}")
     check("pending_of 舊到新",
           [p["msg_id"] for p in w.pending_of("u1")] == [r2.msg_id, r3.msg_id])
-    check("pending_of 只有 msg_id 與 text（來源不外流）",
-          all(set(p) == {"msg_id", "text"} for p in w.pending_of("u1")))
+    check("pending_of 只有 msg_id、text 與 attachments（來源不外流）",
+          all(set(p) == {"msg_id", "text", "attachments"} for p in w.pending_of("u1")))
     check("別條對話什麼都沒有", w.pending_of("u2") == [] and not w.is_running("u2"))
 
     gate.put_nowait(None)                       # 放行第一輪
@@ -144,7 +144,7 @@ async def test_steer() -> None:
     w = make_worker(fe)
     gate: asyncio.Queue = asyncio.Queue()
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         await gate.get()
 
     worker_mod.handle_turn = fake_turn
@@ -194,7 +194,7 @@ async def test_stop() -> None:
     gate: asyncio.Queue = asyncio.Queue()
     prompts: list[str] = []
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
         await gate.get()
 
@@ -232,7 +232,7 @@ async def test_wake() -> None:
     prompts: list[str] = []
     wakes: list = []
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
         await gate.get()
 
@@ -282,7 +282,7 @@ async def test_rate_limit_and_restore() -> None:
     calls: list[str] = []
     resets = time.time() + 0.4
 
-    async def fake_turn(text, state, frontend, src="") -> CCError | None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> CCError | None:
         calls.append(text)
         if len(calls) == 1:
             return CCError("RATE_LIMIT", "limit", resets_at=resets)
@@ -321,7 +321,7 @@ async def test_rate_limit_and_restore() -> None:
     w2._pending_remember("r2", "同一對話只留最後一則", "Discord")
     ran: list[tuple[str, str]] = []
 
-    async def record(text, state, frontend, src="") -> None:
+    async def record(text, state, frontend, src="", atts=None) -> None:
         ran.append((text, src))
 
     worker_mod.handle_turn = record
@@ -345,7 +345,7 @@ async def test_autoname_callback() -> None:
     w = make_worker(fe, autoname=autoname)
     ran: list[str] = []
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         ran.append(text)
 
     worker_mod.handle_turn = fake_turn
@@ -383,7 +383,7 @@ async def test_remove_and_shutdown() -> None:
     w = make_worker(fe)
     gate: asyncio.Queue = asyncio.Queue()
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         await gate.get()
 
     worker_mod.handle_turn = fake_turn

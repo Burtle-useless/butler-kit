@@ -53,7 +53,9 @@ class Wake:
     ticket: WakeTicket
 
 
-QueueItem = tuple[str, str, str] | Wake
+# (msg_id, 原文, 來源, 附件)。附件是結構化欄位而不是拼進原文的路徑——
+# 畫面照它畫縮圖與檔案卡，只有送給模型的那一份才把路徑接上去（見 turn.stamp）。
+QueueItem = tuple[str, str, str, list[dict]] | Wake
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +150,8 @@ class Worker:
             self.workers[conv_id] = asyncio.create_task(self._loop(conv_id))
         return q
 
-    async def submit(self, conv_id: str, text: str, src: str) -> Submitted:
+    async def submit(self, conv_id: str, text: str, src: str,
+                     attachments: list[dict] | None = None) -> Submitted:
         """收一則使用者訊息：回合進行中就插話，否則排隊；一律先發回音事件。
 
         `src` 已經是中文來源名（「手機」「電腦」「Discord」），對照表由各前端自己管。
@@ -167,7 +170,8 @@ class Worker:
         if conv_id in self.running and q.empty():
             # 插進去的也是人說的話，跟排隊那條一樣蓋時間戳與來源；不蓋的話模型
             # 看到的是一則沒時間、沒來源的訊息（2026-09-02 審查抓到）
-            steered = await engine_runner.try_steer(conv_id, stamp(text, src))
+            steered = await engine_runner.try_steer(
+                conv_id, stamp(text, src, attachments))
         # 這則是不是要排隊，只有伺服器知道：手機端的 busy 是上一則 status 的殘影，
         # 而回合停在提問上等人回答時它甚至不算忙，訊息卻照樣排進來乾等。
         queued = (not steered) and (conv_id in self.running or not q.empty())
@@ -177,12 +181,12 @@ class Worker:
         # 當前回合裡被讀走了，畫成「排隊中」是謊報。
         await fe.emit(make_event(
             conv_id, "-", "user.message", text=text, msg_id=msg_id, queued=queued,
-            steered=steered,
+            steered=steered, attachments=list(attachments or ()),
         ))
         # 插話過的不進佇列：進了就會在回合結束後被 worker 再跑一次，同一句話
         # 處理兩遍。
         if not steered:
-            await q.put((msg_id, text, src))
+            await q.put((msg_id, text, src, list(attachments or ())))
         return Submitted(msg_id=msg_id, queued=queued, steered=steered, qsize=q.qsize())
 
     def pending_of(self, conv_id: str) -> list[dict[str, str]]:
@@ -204,7 +208,7 @@ class Worker:
         # 排著的 wake（助理自己要醒來的那一輪）不列。這份清單畫的是「你送出但還沒
         # 輪到的訊息」，混進一則人沒打過的東西就是謊報。
         return [
-            {"msg_id": it[0], "text": it[1]}
+            {"msg_id": it[0], "text": it[1], "attachments": it[3] if len(it) > 3 else []}
             for it in list(q._queue) if not isinstance(it, Wake)
         ]
 
@@ -286,9 +290,13 @@ class Worker:
         except Exception:  # noqa: BLE001
             pass
 
-    def _pending_remember(self, conv_id: str, text: str, src: str) -> None:
+    def _pending_remember(self, conv_id: str, text: str, src: str,
+                          attachments: list[dict] | None = None) -> None:
         items = [i for i in self._pending_load() if i.get("conv") != conv_id]
-        items.append({"conv": conv_id, "text": text, "src": src})
+        # 附件一起留著：只存文字的話，額度回復後重跑的那一輪會少掉檔案，
+        # 模型看到「看這張圖」卻沒有圖
+        items.append({"conv": conv_id, "text": text, "src": src,
+                      "attachments": list(attachments or ())})
         self._pending_save(items)
 
     def _pending_forget(self, conv_id: str) -> None:
@@ -311,20 +319,24 @@ class Worker:
             if not conv or not text:
                 continue
             q = self.ensure(conv)
-            await q.put((uuid.uuid4().hex[:12], text, str(it.get("src") or "")))
+            atts = it.get("attachments")
+            await q.put((uuid.uuid4().hex[:12], text, str(it.get("src") or ""),
+                         list(atts) if isinstance(atts, list) else []))
         return len(items)
 
     # ── 回合執行 ───────────────────────────────────────────────────────────
     async def _run_messages(
-        self, conv_id: str, fe: Frontend, batch: list[tuple[str, str, str]],
+        self, conv_id: str, fe: Frontend, batch: list[tuple[str, str, str, list[dict]]],
     ) -> None:
         """把一批使用者訊息合併成一輪跑完。佇列的 task_done 由 `_loop` 統一做。"""
         # 這幾則從「排著」變成「正在做」。手機端靠這則事件把淡掉的氣泡點亮，
         # 少了它，畫面上永遠分不出助理讀到哪一則了。
         await fe.emit(make_event(
-            conv_id, "-", "message.taken", msg_ids=[mid for mid, _, _ in batch],
+            conv_id, "-", "message.taken", msg_ids=[b[0] for b in batch],
         ))
-        text = _merge([t for _, t, _ in batch])
+        text = _merge([b[1] for b in batch])
+        # 整批的附件併起來：一批就是一輪，模型讀到的是同一則 prompt
+        atts = [a for b in batch for a in (b[3] or ())]
         # 一批裡混到兩種來源是罕事（人不會同時拿著手機又坐在電腦前打字），
         # 真混到就聽最後一則的——那則最接近「他現在人在哪」
         src = batch[-1][2]
@@ -334,7 +346,7 @@ class Worker:
             await fe.emit(make_event(
                 conv_id, "-", "status", note=f"把剛才那 {len(batch)} 則一起處理",
             ))
-        task = asyncio.create_task(handle_turn(text, state, fe, src))
+        task = asyncio.create_task(handle_turn(text, state, fe, src, atts))
         self.running[conv_id] = task
         err = await task
         if err is not None and err.kind == "RATE_LIMIT" and err.resets_at:
@@ -350,12 +362,12 @@ class Worker:
                 ))
                 # 等待期間服務重啟（使用者按重新啟動、當機）會把佇列連同這則一起弄丟。
                 # 先落檔，啟動時 `restore_pending` 會把它重新排回去
-                self._pending_remember(conv_id, text, src)
+                self._pending_remember(conv_id, text, src, atts)
                 try:
                     waiter = asyncio.create_task(asyncio.sleep(wait + 5))
                     self.running[conv_id] = waiter
                     await waiter
-                    task = asyncio.create_task(handle_turn(text, state, fe, src))
+                    task = asyncio.create_task(handle_turn(text, state, fe, src, atts))
                     self.running[conv_id] = task
                     await task
                 finally:

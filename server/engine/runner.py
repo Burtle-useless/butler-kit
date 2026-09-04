@@ -281,6 +281,11 @@ async def run_turn(
         # 400 字，於是前端得靠「本地串流緩衝」猜哪些字算定稿：沒有 delta 的回覆
         # （額度用盡那句、很短的回答、背景對話）就整則消失，背景對話則被截成
         # 400 字（2026-09-02 兩端審查各抓到一次）。定稿是伺服器的事，前端只管畫。
+        # 定稿前要過 clean_reply：控制標記（[[DONE]]／[[WAIT]]／[[ASK:…]]）是給系統讀的，
+        # 留著就是洩漏。先前只有最後那則 reply.final 清，step.commit 直接送原文——
+        # 於是 [[ASK:問題|選項…]] 整串以文字畫在畫面上，下面才是選項卡
+        # （2026-09-04 使用者截圖回報）。
+        step_text = clean_reply(step_text)
         if digest or step_text:
             await frontend.emit(make_event(
                 conv, turn_id, "step.commit",
@@ -551,6 +556,15 @@ async def run_turn(
             # 有工具在跑就放寬：等一個沒輸出的工具跑完不是卡死
             limit = (config.TOOL_INACTIVITY_TIMEOUT if tools_pending
                      else config.INACTIVITY_TIMEOUT)
+            # **有背景工作在跑就完全不算閒置。** `run_in_background` 的 Bash 一送出
+            # 就回一個 task id、ToolResult 立刻到手，所以 tools_pending 是空的；
+            # 模型接著等那件工作跑完，這段期間一個字都不會輸出。門檻於是退回 600 秒，
+            # 一件跑十分鐘以上的背景工作必定讓整個回合被判定卡死中止
+            # （2026-09-04 使用者截圖：五件背景工作都 completed，回合卻被中止）。
+            # 背景工作的存活由 bg_notify 記帳，它有東西就代表這邊在等、不是死了。
+            if bg_notify.active(conv):
+                last_activity[0] = time.time()
+                continue
             if time.time() - last_activity[0] > limit:
                 timed_out = True
                 break

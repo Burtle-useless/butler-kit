@@ -81,7 +81,7 @@ async def test_delete_conv_stops_worker() -> None:
     app_mod.state_mod.get_title = lambda cid: "有標題"
     app_mod.state_mod.delete_conversation = lambda cid: True
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         await gate.get()
     worker_mod.handle_turn = fake_turn
 
@@ -114,7 +114,7 @@ async def test_stop_keeps_worker() -> None:
     worker_mod.get_state = lambda cid: ConvState(conv_id=cid, cwd=Path.home())
     app_mod.state_mod.get_title = lambda cid: "有標題"
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
         await gate.get()
     worker_mod.handle_turn = fake_turn
@@ -144,7 +144,7 @@ async def test_dead_worker_rebuilt() -> None:
     app_mod.state_mod.get_title = lambda cid: "有標題"
     boom = [True]
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
         if boom[0]:
             boom[0] = False
@@ -178,7 +178,7 @@ async def test_wake_not_batched_with_messages() -> None:
         wakes.append(ticket)
         await gate.get()
 
-    async def fake_turn(text, state, frontend, src="") -> None:
+    async def fake_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
     worker_mod.handle_wake = fake_wake
     worker_mod.handle_turn = fake_turn
@@ -186,7 +186,7 @@ async def test_wake_not_batched_with_messages() -> None:
     # 先把 worker 卡在一個回合上，才能讓 wake 與訊息同時排著
     blocker: asyncio.Queue = asyncio.Queue()
 
-    async def first_turn(text, state, frontend, src="") -> None:
+    async def first_turn(text, state, frontend, src="", atts=None) -> None:
         prompts.append(text)
         await blocker.get()
     worker_mod.handle_turn = first_turn

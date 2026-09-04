@@ -55,7 +55,11 @@ EventType = Literal[
                         #   已完成的也在裡面，直到使用者下次發言才收起來。
     "seq.gap",          # 續傳斷層，叫前端改拉 snapshot：{"from","to"}
     "user.message",     # 使用者訊息回音（多裝置同步的基礎）：
-                        #   {"text","msg_id","queued"}
+                        #   {"text","msg_id","queued","steered","attachments"}
+                        #   attachments 是 [{name,path,bytes,mime}]，**結構化欄位**：
+                        #   前端據此畫縮圖與檔案卡，路徑只在送給模型的那一份出現
+                        #   （turn.stamp 接上去，跟時間戳同一個道理）。先前是 App
+                        #   自己把路徑拼進本文，於是那串路徑成了使用者氣泡裡的文字。
                         #   **只有人真的送出訊息時才發。** 助理自己醒來的那一輪
                         #   （背景工作跑完後的 wake 回合）沒有任何使用者訊息，
                         #   由 turn.start 的 origin="wake" 說明，不偽造一則發言。
