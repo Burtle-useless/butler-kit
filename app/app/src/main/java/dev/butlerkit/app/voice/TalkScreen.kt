@@ -31,6 +31,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -152,7 +154,10 @@ private fun Latest(s: TalkState, modifier: Modifier, onReplay: (TalkLine) -> Uni
     val latest = s.lines.lastOrNull()
     Column(
         modifier.fillMaxWidth()
-            .then(if (latest != null) Modifier.clickable { onReplay(latest) } else Modifier),
+            .then(
+                if (latest != null) Modifier.clickable(role = Role.Button) { onReplay(latest) }
+                else Modifier,
+            ),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -199,7 +204,7 @@ private fun LineRow(line: TalkLine, onReplay: (TalkLine) -> Unit) {
             .background(
                 if (mine) Palette.UserBubble else Palette.BotBubble, Radii.Bubble,
             )
-            .clickable { onReplay(line) }
+            .clickable(role = Role.Button) { onReplay(line) }
             .padding(12.dp),
     ) {
         // 標明方向而不只是說話者的語言：只寫「中文」的話，配著下面那行英文譯文
@@ -243,8 +248,9 @@ private fun MicButton(
     }
     Column(
         modifier
-            .background(bg, Radii.Card)
-            .clickable(enabled = enabled) { onClick() }
+            .clip(Radii.Card)
+            .background(bg)
+            .clickable(enabled = enabled, role = Role.Button) { onClick() }
             .padding(vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -294,11 +300,12 @@ private fun Divider(
         // 第一件該做的事就是去下載它，不必先撞一次失敗才知道。
         Text(
             "語音包", color = Palette.TextDim, fontSize = Type.Meta,
-            modifier = Modifier.clickable { openVoiceInputSettings(ctx) }.padding(8.dp),
+            modifier = Modifier.clickable(role = Role.Button) { openVoiceInputSettings(ctx) }
+                .padding(8.dp),
         )
         Text(
             "清空", color = Palette.TextDim, fontSize = Type.Meta,
-            modifier = Modifier.clickable { onClear() }.padding(8.dp),
+            modifier = Modifier.clickable(role = Role.Button) { onClear() }.padding(8.dp),
         )
         IconBtn(Icons.Filled.Close, "關掉翻譯", onClick = onClose)
     }
@@ -311,7 +318,8 @@ private fun LangPicker(current: TalkLang, onPick: (TalkLang) -> Unit) {
         Text(
             current.label,
             color = Palette.Accent, fontSize = Type.Body,
-            modifier = Modifier.clickable { open = true }.padding(vertical = 4.dp),
+            modifier = Modifier.clickable(role = Role.DropdownList) { open = true }
+                .padding(vertical = 4.dp),
         )
         // 選單裡才附原文名：頂端那條放不下「印尼文　Bahasa Indonesia」這種長度
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {

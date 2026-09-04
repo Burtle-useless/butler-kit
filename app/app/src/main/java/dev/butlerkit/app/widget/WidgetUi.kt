@@ -11,6 +11,8 @@ import androidx.glance.action.clickable
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.background
+// day/night 兩個值的那個多載在 color 底下，單值的在 unit 底下，兩個都要
+import androidx.glance.color.ColorProvider
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Column
 import androidx.glance.layout.Row
@@ -33,27 +35,29 @@ import dev.butlerkit.app.MainActivity
  * `ColorProvider`，而且 widget 畫在別人的桌布上，能用的顏色數比 App 內少得多——
  * 這裡只挑用得到的那幾個，多搬只會讓人以為整套色彩系統都能用。
  *
- * **不跟隨系統日夜**：App 本體就只有深色一種，widget 跟著深色才不會兩個地方長得不像。
+ * **跟隨系統日夜**：每個顏色都是 day/night 一對，跟 Theme.kt 的兩套色票對齊。
+ * Glance 拿不到 App 的 `LocalPalette`（它畫的是 RemoteViews，跑在桌面那個進程裡），
+ * 所以只能靠 `ColorProvider(day, night)` 這個雙值形式讓系統自己挑。
  */
 internal object W {
-    // 這幾個值是 Palette 的抄本，每個值後面標的是它抄自哪個欄位。
-    // **換色票時這裡要跟著改**——差幾個色階單看 widget 不明顯，但點進 App
-    // 那一瞬間會覺得換了個地方。
-    val Bg = ColorProvider(Color(0xFFFAFAFA))       // Palette.Surface
-    val Text = ColorProvider(Color(0xFF1F1F1F))     // Palette.Text
-    val Dim = ColorProvider(Color(0xFF5F5F5F))      // Palette.TextDim
-    val Faint = ColorProvider(Color(0xFF9A9A9A))    // Palette.TextFaint
-    val Accent = ColorProvider(Color(0xFF4A6FA5))   // Palette.Accent
-    val Line = ColorProvider(Color(0xFFDDDDDD))     // Palette.Line
-    val Ok = ColorProvider(Color(0xFF2E7D52))       // Palette.Ok
-    val Warn = ColorProvider(Color(0xFFB07C1E))     // Palette.Warn
-    val Danger = ColorProvider(Color(0xFFC0392B))   // Palette.Danger
-    val Now = ColorProvider(Color(0x1F4A6FA5))      // Palette.AccentSoft：正在進行中的那列
-    val Bar = ColorProvider(Color(0x664A6FA5))      // 長條圖的過去幾天，今天那根才是實色
+    // 這幾個值是 Theme.kt 的 LightColors／DarkColors 抄本，每個值後面標的是
+    // 它抄自哪個欄位。**換色票時這裡要跟著改**——差幾個色階單看 widget 不明顯，
+    // 但點進 App 那一瞬間會覺得換了個地方。
+    val Bg = ColorProvider(day = Color(0xFFFAFAFA), night = Color(0xFF1C1C1C))       // surface
+    val Text = ColorProvider(day = Color(0xFF1F1F1F), night = Color(0xFFE8E8E8))     // text
+    val Dim = ColorProvider(day = Color(0xFF5F5F5F), night = Color(0xFFABABAB))      // textDim
+    val Faint = ColorProvider(day = Color(0xFF9A9A9A), night = Color(0xFF7A7A7A))    // textFaint
+    val Accent = ColorProvider(day = Color(0xFF4A6FA5), night = Color(0xFF7FA0D4))   // accent
+    val Line = ColorProvider(day = Color(0xFFDDDDDD), night = Color(0xFF3A3A3A))     // line
+    val Ok = ColorProvider(day = Color(0xFF2E7D52), night = Color(0xFF6FBF8F))       // ok
+    val Warn = ColorProvider(day = Color(0xFFB07C1E), night = Color(0xFFD4AB5E))     // warn
+    val Danger = ColorProvider(day = Color(0xFFC0392B), night = Color(0xFFE57368))   // danger
+    val Now = ColorProvider(day = Color(0x1F4A6FA5), night = Color(0x2E7FA0D4))      // accentSoft：正在進行中的那列
+    val Bar = ColorProvider(day = Color(0x664A6FA5), night = Color(0x667FA0D4))      // 長條圖的過去幾天，今天那根才是實色
 
-    // 課表 widget 跟 App 內的課表頁一致（Accents 預設全指向 Accent）
-    val Course = ColorProvider(Color(0xFF4A6FA5))       // Accents.Course
-    val CourseNow = ColorProvider(Color(0x1F4A6FA5))    // 同色的襯底
+    // 課表 widget 跟 App 內的課表頁一致（Accents 預設全指向 accent）
+    val Course = ColorProvider(day = Color(0xFF4A6FA5), night = Color(0xFF7FA0D4))       // Accents.Course
+    val CourseNow = ColorProvider(day = Color(0x1F4A6FA5), night = Color(0x2E7FA0D4))    // 同色的襯底
 }
 
 /**

@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,13 +20,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -40,12 +37,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.butlerkit.app.BuildConfig
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.SearchHit
 import dev.butlerkit.app.net.SystemStatus
@@ -89,7 +87,7 @@ fun ToolsScreen(client: ButlerClient, onOpenSettings: () -> Unit) {
                         Modifier
                             .weight(1f)
                             .background(if (selected) Palette.Text else Palette.Bg)
-                            .clickable { showKanban = isKanban }
+                            .clickable(role = Role.Tab) { showKanban = isKanban }
                             .padding(vertical = 8.dp),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -204,27 +202,7 @@ fun ToolsScreen(client: ButlerClient, onOpenSettings: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                BasicTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier.weight(1f)
-                        .background(Palette.SurfaceHi, Radii.Field)
-                        .padding(horizontal = 16.dp, vertical = 16.dp),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        fontSize = Type.Body, color = Palette.Text,
-                    ),
-                    singleLine = true,
-                    cursorBrush = SolidColor(Palette.Accent),
-                    decorationBox = { inner ->
-                        Box {
-                            if (query.isEmpty()) {
-                                Text("關鍵字", color = Palette.TextFaint,
-                                    fontSize = Type.Body)
-                            }
-                            inner()
-                        }
-                    },
-                )
+                Field(query, "關鍵字", modifier = Modifier.weight(1f)) { query = it }
                 PillButton("找", enabled = query.isNotBlank()) {
                     scope.launch {
                         searchError = null
@@ -331,7 +309,7 @@ private fun ToolSection(
                         // 這行字本身只有 18dp 高，撐開可點範圍但外觀不變
                         modifier = Modifier.minimumInteractiveComponentSize()
                             .clip(Radii.Chip)
-                            .clickable { open = !open }
+                            .clickable(role = Role.Button) { open = !open }
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                     )
                 }
@@ -390,13 +368,13 @@ private fun ServiceSection(client: ButlerClient) {
             )
             if (s.commit.isNotBlank()) {
                 Text(
-                    "版本 ${s.commit}　${s.subject}",
+                    "服務 ${s.commit}　${s.subject}",
                     color = Palette.TextDim, fontSize = Type.Meta,
                     lineHeight = Type.MetaLine,
                 )
             }
-            // 磁碟上已經有更新的 commit＝程式改過了但還沒重啟。少了這一行，
-            // 上面那個雜湊看起來永遠是對的，「我到底按過重啟了沒」無從判斷
+            // 磁碟上有更新的一筆＝助理改完了但這個行程還跑著舊的。這行就是
+            // 「我到底按過重啟了沒」的答案，沒有它只能靠記憶
             if (s.latestCommit.isNotBlank() && s.latestCommit != s.commit) {
                 Text(
                     "有新版 ${s.latestCommit} 還沒生效　${s.latestSubject}",
@@ -404,6 +382,10 @@ private fun ServiceSection(client: ButlerClient) {
                     lineHeight = Type.MetaLine,
                 )
             }
+            Text(
+                "App ${BuildConfig.VERSION_NAME}",
+                color = Palette.TextDim, fontSize = Type.Meta,
+            )
         }
         err?.let { Text(it, color = Palette.Danger, fontSize = Type.Meta) }
 
@@ -436,11 +418,9 @@ private fun ServiceSection(client: ButlerClient) {
 }
 
 /**
- * 動作按鈕。[loading] 時把文字換成轉圈，寬度不變才不會讓整列跳一下。
- *
- * 形狀是 [Radii.Field] 不是 [Radii.Chip]：卡片拆成段落之後這顆按鈕沒有邊框框著，
- * 全膠囊加大內縮會漲成一顆亮青色的胖藥丸，三段各一顆就變成整頁最搶眼的東西，
- * 而它們並不是這頁的重點。方角一點、矮一點，份量才回到它該有的位置。
+ * 這一頁的動作按鈕：共用的 [ActionButton] 收成不撐滿、矮一點的版本。
+ * 卡片拆成段落之後這顆按鈕沒有邊框框著，撐滿又高的話三段各一顆就變成
+ * 整頁最搶眼的東西，而它們並不是這頁的重點。
  */
 @Composable
 private fun PillButton(
@@ -451,26 +431,13 @@ private fun PillButton(
     danger: Boolean = false,
     onClick: () -> Unit,
 ) {
-    Button(
+    ActionButton(
+        text,
+        enabled = enabled,
+        loading = loading,
+        tint = if (danger) Palette.Danger else Palette.Accent,
+        modifier = Modifier,
+        pad = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
         onClick = onClick,
-        enabled = enabled && !loading,
-        shape = Radii.Field,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (danger) Palette.Danger else Palette.Accent,
-            contentColor = Palette.Bg,
-            disabledContainerColor = Palette.SurfaceHi,
-            disabledContentColor = Palette.TextFaint,
-        ),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            horizontal = 20.dp, vertical = 12.dp,
-        ),
-    ) {
-        if (loading) {
-            CircularProgressIndicator(
-                Modifier.size(16.dp), color = Palette.Bg, strokeWidth = 2.dp,
-            )
-        } else {
-            Text(text, fontSize = Type.Body, fontWeight = FontWeight.Bold)
-        }
-    }
+    )
 }

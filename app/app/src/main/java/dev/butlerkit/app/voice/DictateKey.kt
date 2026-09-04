@@ -21,12 +21,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import dev.butlerkit.app.ui.Palette
+import dev.butlerkit.app.ui.Radii
 
 /**
  * 對著手機講，字進輸入框。
@@ -80,9 +85,12 @@ fun DictateKey(onText: (String) -> Unit, modifier: Modifier = Modifier) {
     Box(
         // 方框墨線，收音中換朱紅框——印刷風的按鈕是框不是圓（同輸入列其他鈕）
         modifier.size(44.dp)
+            .clip(Radii.Field)
             .background(if (listening) Palette.AccentSoft else Palette.Bg)
-            .border(1.dp, if (listening) Palette.Accent else Palette.Line)
-            .clickable {
+            .border(1.dp, if (listening) Palette.Accent else Palette.Line, Radii.Field)
+            // 圖示是字元（◉／■），讀螢幕軟體會唸成標點，說明要另外給
+            .semantics { contentDescription = if (listening) "停止聽寫" else "講話填字" }
+            .clickable(role = Role.Button) {
                 when {
                     listening -> speech.stop()
                     ContextCompat.checkSelfPermission(

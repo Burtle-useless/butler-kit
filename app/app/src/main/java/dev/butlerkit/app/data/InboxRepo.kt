@@ -59,6 +59,16 @@ object InboxRepo {
     private val _staged = MutableStateFlow<Set<String>>(emptySet())
     val staged: StateFlow<Set<String>> = _staged.asStateFlow()
 
+    /**
+     * 已經裝起來的 APK（file_id）。按鈕顯示「已更新」靠它。
+     *
+     * 跟 [staged] 剛好是一件事的前後兩段：staged 是「檔案在暫存區等著被裝」，
+     * 這個是「裝完了，暫存檔已經被清掉」。所以兩者永遠不會同時成立，
+     * 而少了這一份，裝完之後那張卡會退回「存到手機」——看起來像剛才那一下沒生效。
+     */
+    private val _installed = MutableStateFlow<Set<String>>(emptySet())
+    val installed: StateFlow<Set<String>> = _installed.asStateFlow()
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
@@ -74,8 +84,11 @@ object InboxRepo {
      */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** [saved] 最多記幾筆。一天傳不到幾個檔，300 筆夠久到不需要考慮。 */
+    /** [saved] 最多記幾筆。助理一天傳不到幾個檔，300 筆夠久到不需要考慮。 */
     private const val SAVED_LIMIT = 300
+
+    /** [installed] 最多記幾筆。一筆等於一次改版，30 筆是好幾個月的量。 */
+    private const val INSTALLED_LIMIT = 30
 
     fun clearError() {
         _error.value = null
@@ -102,15 +115,52 @@ object InboxRepo {
     }
 
     /**
-     * App 啟動時把兩份狀態還原回來：已經備好的更新（掃暫存目錄），
-     * 以及下載過哪些檔案（讀 Prefs）。
+     * App 啟動時把三份狀態還原回來：已經備好的更新（掃暫存目錄）、
+     * 下載過哪些檔案、裝過哪些更新（後兩份讀 Prefs）。
      */
     fun restore(ctx: Context) {
         val app = ctx.applicationContext
         scope.launch {
             _staged.value = ApkUpdate.stagedIds(app)
             _saved.value = Prefs(app).savedFiles
+            // 合併而不是覆寫：這一句跟 [markInstalled] 可能在同一次啟動裡搶著跑
+            // ——更新完成那一刻，Application 起來排了這個 launch，系統接著把
+            // MY_PACKAGE_REPLACED 送進 BootReceiver。直接賦值的話，先讀後寫
+            // 就會把剛標記好的那一筆蓋掉。
+            _installed.update { it + Prefs(app).installedApks }
         }
+    }
+
+    /**
+     * 系統剛把這支 App 換成新版了，把稍早送出去的那一筆結案。
+     *
+     * 由 [dev.butlerkit.app.alarm.BootReceiver] 收到 MY_PACKAGE_REPLACED 時呼叫，
+     * **必須在 [ApkUpdate.clear] 之前**——第二個線索要從那個目錄讀。
+     *
+     * 兩個線索，先後有別：
+     * 1. [Prefs.pendingInstall]——安裝畫面是誰叫出來的，最準。
+     * 2. 暫存區裡剩下的那支——目錄同時只留一份（見 [ApkUpdate.target]），
+     *    而 MY_PACKAGE_REPLACED 這一刻它還沒被清掉，所以它幾乎必然就是
+     *    剛剛裝上去的那支。
+     *
+     * 留著第二條是因為第一條有個先有雞還是先有蛋的問題：pending 由**送出安裝的
+     * 那一版**寫入，而這個功能是新加的——舊版按下去的那次安裝不會留下記號，
+     * 於是升上來的第一版永遠標不到自己。少了它，這件事要等到下下版才看得見。
+     *
+     * 兩個都沒有就什麼都不做：那代表這次更新不是從卡片裝的（例如 adb 直接推）。
+     */
+    fun markInstalled(ctx: Context) {
+        val app = ctx.applicationContext
+        val prefs = Prefs(app)
+        val fileId = prefs.pendingInstall.ifEmpty {
+            ApkUpdate.stagedIds(app).singleOrNull().orEmpty()
+        }
+        if (fileId.isEmpty()) return
+        prefs.pendingInstall = ""
+        // 已經在裡面就先移掉再加，讓它重新排到最後——裁切是從最前面丟的
+        val next = (prefs.installedApks - fileId + fileId).takeLast(INSTALLED_LIMIT)
+        prefs.installedApks = next
+        _installed.update { it + fileId }
     }
 
     /**
@@ -166,11 +216,15 @@ object InboxRepo {
             return
         }
         if (!ApkUpdate.allowed(app)) {
-            _error.value = "系統要你先允許這個 App 安裝應用程式。開完回來再按一次安裝。"
+            _error.value = "系統要你先允許助理安裝應用程式。開完回來再按一次安裝。"
             runCatching { ApkUpdate.openPermissionSettings(app) }
             return
         }
         runCatching { ApkUpdate.install(app, apk) }
+            // 記在送出之後、成功的時候：安裝畫面都叫不出來就沒有「等結果」這回事。
+            // 使用者在系統畫面按取消也會留著這一筆，但那筆只有在下一次更新真的
+            // 成功時才會被讀到，而屆時它早就被新的 id 覆寫了。
+            .onSuccess { Prefs(app).pendingInstall = fileId }
             .onFailure { _error.value = "叫不出安裝畫面：${it.message ?: "未知原因"}" }
     }
 
@@ -231,7 +285,7 @@ object InboxRepo {
      * APK 走自己的路：存進 App 的暫存區，不進公用「下載」目錄。理由見 [ApkUpdate]。
      *
      * 半截檔一定要刪掉。留著的話 [ApkUpdate.staged] 會以為它備好了，
-     * 按下安裝只會得到系統一句「無法剖析套件」——那看起來像編壞了，不像沒下載完。
+     * 按下安裝只會得到系統一句「無法剖析套件」——那看起來像我編壞了，不像沒下載完。
      */
     private suspend fun stageApk(
         ctx: Context, client: ButlerClient, file: OfferedFile,

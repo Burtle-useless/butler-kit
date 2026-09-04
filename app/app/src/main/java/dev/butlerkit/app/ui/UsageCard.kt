@@ -173,9 +173,10 @@ private fun LimitBar(l: PlanLimit) {
             Text(l.label, color = Palette.TextDim, fontSize = Type.Meta)
             Text("${l.pct.toInt()}%", color = color, fontSize = Type.Meta)
         }
+        val track = Palette.SurfaceHi   // draw lambda 裡讀不到 Palette，先取出來
         Canvas(Modifier.fillMaxWidth().height(5.dp)) {
             val radius = CornerRadius(2.5.dp.toPx())
-            drawRoundRect(color = Palette.SurfaceHi, size = size, cornerRadius = radius)
+            drawRoundRect(color = track, size = size, cornerRadius = radius)
             val w = size.width * (l.pct / 100f)
             if (w > 0f) {
                 drawRoundRect(color = color, size = Size(w, size.height),
@@ -228,6 +229,8 @@ private fun DayBars(days: List<DayUsage>) {
             Text("最高 ${fmtTokens(peak.toLong())}", color = Palette.TextFaint,
                 fontSize = Type.Tiny)
         }
+        val accent = Palette.Accent     // 同上，draw lambda 外先取
+        val faint = Palette.TextFaint
         Canvas(Modifier.fillMaxWidth().height(112.dp)) {
             val n = values.size
             val gap = 4.dp.toPx()
@@ -237,8 +240,8 @@ private fun DayBars(days: List<DayUsage>) {
                 val h = if (v <= 0f) 1.5.dp.toPx()
                 else (v / peak * size.height).coerceAtLeast(2.dp.toPx())
                 drawRoundRect(
-                    color = if (i == n - 1) Palette.Accent
-                    else Palette.Accent.copy(alpha = 0.35f),
+                    color = if (i == n - 1) accent
+                    else accent.copy(alpha = 0.35f),
                     topLeft = Offset(i * (w + gap), size.height - h),
                     size = Size(w, h),
                     cornerRadius = CornerRadius(2.dp.toPx()),
@@ -248,7 +251,7 @@ private fun DayBars(days: List<DayUsage>) {
             if (avg > 0f) {
                 val y = size.height - avg / peak * size.height
                 drawLine(
-                    color = Palette.TextFaint,
+                    color = faint,
                     start = Offset(0f, y), end = Offset(size.width, y),
                     strokeWidth = 1.dp.toPx(),
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(9f, 7f)),

@@ -58,8 +58,41 @@ class ButlerService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        // App 一回到前景，服務就自己退場——前景由 ViewModel 連線，兩條 SSE 並存
+        // 會一起改 lastSeq。**只能由服務自己停，而且要延後**：startForeground 在系統端
+        // 是非同步登記，登記完成前被停掉（不論是外面 stopService 還是這裡 stopSelf）
+        // 都會讓整個 App 被 ForegroundServiceDidNotStartInTimeException 殺掉。
+        // 1.5 秒足夠 onStartCommand 把前景登記做完。
+        scope.launch {
+            AppForeground.flow.collect { visible ->
+                if (!visible) return@collect
+                delay(1500)
+                if (AppForeground.flow.value) {
+                    Log.i(ButlerClient.TAG, "App 在前景，背景服務退場")
+                    stopSelf()
+                }
+            }
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundCompat()
+        // START_STICKY 讓系統殺掉之後會把服務拉回來——包括 App 已經回到前景之後。
+        // 那時前景的 ViewModel 已經自己在連，再起一條就是兩條 SSE 一起改 lastSeq，
+        // 畫面重複、推播漏掉兩種症狀都出過。前景就退場，交還給 ViewModel。
+        //
+        // **退場要延後，不能在 onStartCommand 裡直接 stopSelf。** startForeground()
+        // 在系統端是非同步登記的，緊接著 stopSelf() 會撞上「還在等前景化」的檢查，
+        // 整個 App 被 ForegroundServiceDidNotStartInTimeException 殺掉——2026-09-03
+        // 在模擬器上實測兩次，先 startForeground 再 stopSelf 也一樣炸。
+        if (AppForeground.flow.value) {
+            // 退場本身交給 onCreate 那個觀察者（它看到前景就會延後 stopSelf），
+            // 這裡只要不起連線就好
+            Log.i(ButlerClient.TAG, "服務被拉起但 App 在前景，稍後退場")
+            return START_NOT_STICKY
+        }
         Log.i(
             ButlerClient.TAG,
             "服務 onStartCommand：連線 job=${if (job == null) "要起" else "已在"}，" +
@@ -184,8 +217,18 @@ class ButlerService : Service() {
                         is Wire.Conn -> if (wire.connected) backoff = 2_000L
                         is Wire.Ev -> {
                             val ev = wire.event
-                            prefs.bgSeq = ev.seq
+                            // 逐字事件不落盤：每個 delta 都重寫整份 SharedPreferences
+                            // XML 是寫入風暴（同一份檔還裝著大快取），續傳游標差幾則
+                            // delta 沒有損失——定稿事件一到就會補上
+                            if (ev.type != "text.delta" && ev.type != "thinking.delta") {
+                                prefs.bgSeq = ev.seq
+                            }
                             when (ev.type) {
+                                // 別台裝置答完了（或伺服器逾時收掉）：「助理在等你回答」
+                                // 這則通知該跟著消失，不然人點進來只看到已經答過的題
+                                "ask.resolved" -> Notifier.clearKind(
+                                    this@ButlerService, NotifyKind.NeedsYou, ev.convId,
+                                )
                                 "turn.start" ->
                                     notifyFiles(ev.convId, fileGate.onTurnStart(ev.convId))
                                 // 心跳，只用來確認「還在跑」（見 FileNotifyGate.onRunning）
@@ -205,7 +248,7 @@ class ButlerService : Service() {
                                 "agenda.changed" -> AgendaRepo.refresh(
                                     applicationContext, client,
                                 )
-                                // 助理傳檔案來了。這裡只通知與更新清單，不自動下載——
+                                // 助理傳檔案來了。一般檔案只通知與更新清單，不自動下載——
                                 // 上限 256MB，替使用者決定用掉行動網路不是幫忙。
                                 "file.offer" -> {
                                     val name = ev.str("name")
@@ -260,8 +303,14 @@ class ButlerService : Service() {
      * 整則訊息真的收工了（伺服器的 `turn.done`）。這是「做完了」推播的唯一來源。
      *
      * 判斷依據全部由伺服器給，App 不再自己數：
-     *  - `pending_ask`：停在提問上。少了這道閘門，通知欄會同時出現「做完了」與
-     *    「助理在等你回答」兩則，而前者的語意是錯的。
+     *  - `pending_ask`：停在提問上，改推「助理在等你回答」而不是「做完了」。
+     *    **這裡原本是直接 return**，理由是「推播由 ask.request 負責」——那句話
+     *    在 2026-08-19 之後就不成立了：`[[ASK:]]` 標記走的是 inline 那條路
+     *    （選項跟著 `reply.final` 一起送、不等答案），伺服器**不會**發
+     *    `ask.request`。於是助理問問題時兩條路都不通，一則通知都沒有，
+     *    人不在 App 前面就完全不知道有人在等他。
+     *  - `notify` 對這一種不適用：問題本來就常常一句話問完、不動任何工具，
+     *    照那個門檻篩會把最需要通知的情況篩掉。所以判斷排在它前面。
      *  - `notify`：值不值得吵人（動過工具，或超過 `NOTIFY_AFTER_SEC`）。門檻
      *    只留伺服器那一份——先前 60 這個數字是抄在這裡的，改伺服器沒有效果。
      *    而那兩個素材 App 自己算都會算錯：`tool.call` 會被續跑的 turn.start
@@ -278,7 +327,14 @@ class ButlerService : Service() {
             notifyFiles(ev.convId, files, body)
             return
         }
-        if (ev.bool("pending_ask")) return
+        if (ev.bool("pending_ask")) {
+            // 內文用回覆本身：問題的說明都寫在裡面，比再湊一句罐頭字有用
+            Notifier.notify(
+                this, NotifyKind.NeedsYou, "助理在等你回答",
+                body.ifBlank { "需要你做個決定" }, ev.convId,
+            )
+            return
+        }
         if (!ev.bool("notify")) return
         Notifier.notify(this, NotifyKind.TaskDone, "做完了", body, ev.convId)
     }

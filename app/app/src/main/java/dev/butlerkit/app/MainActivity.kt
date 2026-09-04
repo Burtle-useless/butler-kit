@@ -34,13 +34,13 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,10 +50,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -63,13 +64,12 @@ import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.notify.Notifier
 import dev.butlerkit.app.ui.ActionButton
 import dev.butlerkit.app.ui.AgendaScreen
-import dev.butlerkit.app.ui.ButlerColors
+import dev.butlerkit.app.ui.ButlerTheme
 import dev.butlerkit.app.ui.ChatScreen
 import dev.butlerkit.app.ui.ChatViewModel
 import dev.butlerkit.app.ui.PetFace
 import dev.butlerkit.app.ui.Palette
 import dev.butlerkit.app.ui.PetMood
-import dev.butlerkit.app.ui.Fonts
 import dev.butlerkit.app.ui.SettingsScreen
 import dev.butlerkit.app.ui.ToolsScreen
 import dev.butlerkit.app.ui.Type
@@ -161,17 +161,14 @@ class MainActivity : ComponentActivity() {
                 "tokenLen=${prefs.token.length} lastSeq=${prefs.lastSeq}",
         )
         setContent {
-            MaterialTheme(colorScheme = ButlerColors) {
-                // 全 App 的預設字型鋪在這一層，沒指定 fontFamily 的 Text 全部吃到。
-                // 要換字型改 Theme.kt 的 Fonts.Base 一處就好，不要改這裡。
-                // （中文襯線要走 SerifProbe.Serif，`FontFamily.Serif` 對中文無效）
-                ProvideTextStyle(TextStyle(fontFamily = Fonts.Base)) {
-                    var configured by remember { mutableStateOf(prefs.isConfigured()) }
-                    if (!configured) {
-                        SetupScreen(prefs) { configured = true }
-                    } else {
-                        Root(prefs, nav.value)
-                    }
+            // 色票（跟隨系統日夜）、M3 配色與全 App 的預設字型都在 ButlerTheme 裡。
+            // 要換字型改 Theme.kt 的 Fonts.Base 一處就好，不要改這裡。
+            ButlerTheme {
+                var configured by remember { mutableStateOf(prefs.isConfigured()) }
+                if (!configured) {
+                    SetupScreen(prefs) { configured = true }
+                } else {
+                    Root(prefs, nav.value)
                 }
             }
         }
@@ -196,6 +193,9 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
     var pendingSub by remember { mutableStateOf<String?>(null) }
     // 每個分頁各自的狀態保管處，見下面 SaveableStateProvider 的說明
     val tabStates = rememberSaveableStateHolder()
+    // 操作失敗的一句話。放在設定那層之前收：改設定失敗也要看得到
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) { vm.toasts.collect { snackbar.showSnackbar(it) } }
 
     // 分頁決定看哪個對話：助理頁固定那條專屬對話，cc-bot 頁回到上次選的
     LaunchedEffect(tab) {
@@ -232,9 +232,13 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
 
     // 設定蓋成獨立一層，不留底欄：進來就是專心改設定，改完按返回鍵回原本那頁
     if (settingsOpen) {
-        BackHandler { settingsOpen = false }
+        val closeSettings = {
+            settingsOpen = false
+        }
+        BackHandler { closeSettings() }
+        Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-            IconButton(onClick = { settingsOpen = false }) {
+            IconButton(onClick = closeSettings) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack, "返回",
                     tint = Palette.Text, modifier = Modifier.size(22.dp),
@@ -244,14 +248,17 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                 state = state, prefs = prefs, client = vm.client,
                 onLoad = vm::loadSettings,
                 onApply = vm::applySettings,
-                onSetCwd = { path -> vm.client.setCwd(state.currentConv, path) },
+                onSetCwd = vm::setCwd,
             )
+        }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
         }
         return
     }
 
     Scaffold(
         containerColor = Palette.Bg,
+        snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             // M3 預設 80dp，對只有圖示加一行小字的底欄來說太厚，壓到 64dp。
             // 要另外加手勢導覽條的高度：Modifier.height 設的是含 inset 的總高，
@@ -273,6 +280,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                             // 字型湊出來，粗細與基線各自為政，排在一起就是廉價感的來源。
                             val icon = t.icon
                             if (icon == null) {
+                                // 只有選中的那格顯示真心情，其他格一律 Offline
                                 PetFace(if (tab == t) state.pet else PetMood.Offline, 24.dp)
                             } else {
                                 Icon(icon, t.label, tint = c, modifier = Modifier.size(22.dp))
@@ -313,6 +321,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                         onSend = vm::send,
                         onDraft = vm::setDraft,
                         onStop = vm::stop,
+                        onStopBg = vm::stopBgTask,
                         onAnswer = vm::answerAsk,
                         onSwitchConv = vm::switchCcConversation,
                         onNewConv = vm::newConversation,
@@ -320,6 +329,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                         onAttach = vm::attach,
                         onRemoveAttach = vm::removeAttachment,
                         onConvSettings = vm::applyConvSettings,
+                        onLoadOlder = { vm.loadOlder(state.currentConv) },
                     )
                     Tab.CcBot -> ChatScreen(
                         state = state,
@@ -329,6 +339,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                         onSend = vm::send,
                         onDraft = vm::setDraft,
                         onStop = vm::stop,
+                        onStopBg = vm::stopBgTask,
                         onAnswer = vm::answerAsk,
                         onSwitchConv = vm::switchCcConversation,
                         onNewConv = vm::newConversation,
@@ -336,6 +347,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                         onAttach = vm::attach,
                         onRemoveAttach = vm::removeAttachment,
                         onConvSettings = vm::applyConvSettings,
+                        onLoadOlder = { vm.loadOlder(state.currentConv) },
                     )
                     Tab.Daily -> AgendaScreen(vm.client, pendingSub) { pendingSub = null }
                     Tab.Tools -> ToolsScreen(vm.client) { settingsOpen = true }

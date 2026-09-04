@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色底：與 Theme.kt 的 DarkColors.bg 對齊。啟動畫面與系統列底色都吃這個，
+         跟 App 內色溫不同的話進 App 會閃一下。**換色票時這個值要跟著改。**
+         圖示底色（ic_launcher_bg）不覆寫，launcher 圖示日夜同一顆。 -->
+    <color name="bg">#121212</color>
+</resources>

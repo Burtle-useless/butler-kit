@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -18,10 +19,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -32,16 +35,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 
 /**
@@ -49,6 +56,7 @@ import androidx.compose.ui.unit.dp
  *
  * 這些原本各自長在 AgendaScreen 與 ToolsScreen 裡，兩邊的卡片內縮、圓角、字級
  * 都差一點點——那些「差一點點」加起來就是整個 App 看起來沒設計過的原因。
+ * 現在聊天頁、設定頁、看板也都走這裡（[Field]／[ActionButton]／[IconBtn]）。
  * 尺寸與顏色一律從 [Palette] / [Type] / [Radii] / [Space] 取，不要在呼叫端寫死。
  */
 
@@ -73,7 +81,7 @@ internal fun PageTitle(
     }
 }
 
-/** 區塊標題。[hint] 是右邊的計數膠囊，沒東西時傳 null 就不佔位置。 */
+/** 區塊標題。[hint] 是右邊的計數小標籤，沒東西時傳 null 就不佔位置。 */
 @Composable
 internal fun SectionHead(text: String, hint: String? = null, tint: Color = Palette.Accent) {
     Row(
@@ -100,7 +108,8 @@ internal fun Card(pad: Dp = Space.Inner, content: @Composable ColumnScope.() -> 
     Column(
         Modifier.fillMaxWidth()
             .background(Palette.Surface, Radii.Card)
-            // 深色底上陰影幾乎看不見，一圈細邊框才是卡片的分界線
+            // 不用陰影：紙面上卡片與底色的明度差很小（深色模式更小），
+            // 一圈細邊框才是卡片的分界線
             .border(1.dp, Palette.Line, Radii.Card)
             .padding(pad),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -111,8 +120,9 @@ internal fun Card(pad: Dp = Space.Inner, content: @Composable ColumnScope.() -> 
 /**
  * 帶色條的一列：清單項共用。
  *
- * 左邊那條色條是拉開層次的主要手段——深色底上卡片與背景的明度差本來就小，
- * 一條實色直邊比再加一階灰有效得多，而且它同時擔了「這是哪一頁」的顏色。
+ * 左邊那條色條是拉開層次的主要手段——卡片與背景的明度差本來就小（淺深色都是），
+ * 一條實色直邊比再加一階灰有效得多。它同時擔「這是哪一頁」的顏色——佔位色票裡
+ * 四頁都指向同一個強調色（見 [Accents]），想分頁配色就改那四個值。
  * [dimmed] 是已完成／已關掉的狀態，整列連色條一起壓成灰。
  *
  * [leadWidth] 固定是為了讓同一頁的每一列對齊：時間欄長短不一的話右邊會參差不齊。
@@ -185,7 +195,7 @@ internal fun AddPanel(
                 // clip 要在 border 之前，否則水波紋是整塊方形，蓋過圓角
                 .clip(Radii.Card)
                 .border(1.dp, Palette.Line, Radii.Card)
-                .clickable { open = true }
+                .clickable(role = Role.Button) { open = true }
                 .padding(vertical = 16.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
@@ -214,31 +224,52 @@ internal fun AddPanel(
             IconBtn(Icons.Filled.Close, "收起") { open = false }
         }
         fields()
-        ActionButton(submitText, canSubmit, tint, onSubmit)
+        ActionButton(submitText, canSubmit, tint, onClick = onSubmit)
     }
 }
 
+/**
+ * 輸入框。全 App 只有這一種：凹面底、無邊框、游標吃強調色、提示字灰。
+ *
+ * 2026-09-03 之前聊天頁、設定頁、工具頁、看板各自手刻一份 BasicTextField＋
+ * decorationBox，內縮、字級、圓角各差一點。現在全走這裡，差異只留在參數上：
+ * [modifier] 給寬度（預設撐滿），[maxLines] 大於 1 就是多行框，
+ * [hintColor] 只有輸入列「回答上面那題」那種帶意義的提示才需要換色。
+ */
 @Composable
 internal fun Field(
     value: String,
     hint: String,
     keyboard: KeyboardType = KeyboardType.Text,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    fontSize: TextUnit = Type.Body,
+    lineHeight: TextUnit = TextUnit.Unspecified,
+    maxLines: Int = 1,
+    shape: Shape = Radii.Field,
+    pad: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+    hintColor: Color = Palette.TextFaint,
+    keyboardOptions: KeyboardOptions = KeyboardOptions(keyboardType = keyboard),
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
     onChange: (String) -> Unit,
 ) {
     BasicTextField(
         value = value,
         onValueChange = onChange,
-        modifier = Modifier.fillMaxWidth()
-            .background(Palette.SurfaceHi, Radii.Field)
-            .padding(horizontal = 16.dp, vertical = 16.dp),
-        textStyle = TextStyle(fontSize = Type.Body, color = Palette.Text),
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = keyboard),
+        modifier = modifier
+            .background(Palette.SurfaceHi, shape)
+            .padding(pad),
+        textStyle = TextStyle(
+            fontSize = fontSize, lineHeight = lineHeight, color = Palette.Text,
+        ),
+        singleLine = maxLines == 1,
+        maxLines = maxLines,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
         cursorBrush = SolidColor(Palette.Accent),
         decorationBox = { inner ->
             Box {
-                if (value.isEmpty()) {
-                    Text(hint, color = Palette.TextFaint, fontSize = Type.Body)
+                if (value.isEmpty() && hint.isNotEmpty()) {
+                    Text(hint, color = hintColor, fontSize = fontSize)
                 }
                 inner()
             }
@@ -253,31 +284,62 @@ internal fun PickerChip(text: String, modifier: Modifier = Modifier, onClick: ()
         modifier = modifier
             .clip(Radii.Field)
             .background(Palette.SurfaceHi)
-            .clickable(onClick = onClick)
+            .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 16.dp),
     )
 }
 
-/** [tint] 是所在分頁的重點色；沒傳就用介面主色。 */
+/**
+ * 動作按鈕。全 App 的實色鈕都是它：[tint] 是底色（預設強調色；危險動作給 Danger、
+ * 次要動作給 SurfaceHi 配 [textColor] = Text），關掉時一律退成灰底灰字。
+ *
+ * 2026-09-03 之前設定頁與工具頁用的是 M3 的 `Button(colors = …)`，每顆都
+ * 各自傳一次顏色與形狀。收斂到這裡之後多了幾個開關：[modifier] 給寬度
+ * （預設撐滿，排在輸入框旁邊的小鈕傳 `Modifier`），[loading] 把字換成轉圈
+ * 但寬度不變，[detail] 是字底下的小字說明（提問卡的選項用）。
+ */
 @Composable
 internal fun ActionButton(
     text: String,
-    enabled: Boolean,
+    enabled: Boolean = true,
     tint: Color = Palette.Accent,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    textColor: Color = Palette.Bg,
+    fontSize: TextUnit = Type.Body,
+    loading: Boolean = false,
+    detail: String? = null,
+    pad: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
     onClick: () -> Unit,
 ) {
-    Text(
-        text,
-        color = if (enabled) Palette.Bg else Palette.TextFaint,
-        fontSize = Type.Body,
-        fontWeight = FontWeight.Bold,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth()
+    val on = enabled && !loading
+    val fg = if (on) textColor else Palette.TextFaint
+    Box(
+        modifier
             .clip(Radii.Field)
-            .background(if (enabled) tint else Palette.SurfaceHi)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 16.dp),
-    )
+            .background(if (on) tint else Palette.SurfaceHi)
+            .clickable(enabled = on, role = Role.Button, onClick = onClick)
+            .padding(pad),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            // 轉圈時文字留著但畫成透明：寬度由它撐，整列才不會跳一下
+            Modifier.alpha(if (loading) 0f else 1f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text, color = fg, fontSize = fontSize,
+                fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
+            )
+            if (detail != null && detail.isNotBlank()) {
+                Text(detail, color = fg.copy(alpha = 0.7f), fontSize = Type.Tiny)
+            }
+        }
+        if (loading) {
+            CircularProgressIndicator(
+                Modifier.size(16.dp), color = Palette.TextFaint, strokeWidth = 2.dp,
+            )
+        }
+    }
 }
 
 /**
@@ -288,7 +350,8 @@ internal fun ActionButton(
  * [desc] 是給讀螢幕軟體用的，不會顯示出來，但每顆都要給。
  *
  * 48dp 是 Android 的最小可觸控尺寸（iOS 是 44pt，取大的那個）；圖示本身只有
- * 20dp，外圈那圈空白是可以點的範圍。clip 是為了讓點下去的水波紋是圓的。
+ * 20dp，外圈那圈空白是可以點的範圍。clip 是為了讓點下去的水波紋跟著圓角走
+ * （Radii.Chip，跟其他小鈕同一檔；不是正圓）。
  */
 @Composable
 internal fun IconBtn(
@@ -300,7 +363,7 @@ internal fun IconBtn(
     Box(
         Modifier.size(48.dp)
             .clip(Radii.Chip)
-            .clickable(onClick = onClick),
+            .clickable(role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, desc, tint = tint, modifier = Modifier.size(20.dp)) }
 }

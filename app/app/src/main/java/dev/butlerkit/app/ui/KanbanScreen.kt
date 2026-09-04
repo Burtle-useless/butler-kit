@@ -17,7 +17,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -31,8 +30,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -95,7 +93,7 @@ fun KanbanScreen(client: ButlerClient) {
                 Row(
                     Modifier
                         .background(if (sel) Palette.Text else Palette.Bg)
-                        .clickable { scope.launch { pager.animateScrollToPage(i) } }
+                        .clickable(role = Role.Tab) { scope.launch { pager.animateScrollToPage(i) } }
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -124,7 +122,7 @@ fun KanbanScreen(client: ButlerClient) {
                 fontSize = Type.Meta,
                 fontFamily = FontFamily.SansSerif,
                 modifier = Modifier
-                    .clickable { showAdd = true }
+                    .clickable(role = Role.Button) { showAdd = true }
                     .padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
@@ -298,7 +296,7 @@ private fun Entry(card: KanbanCard, onOpen: () -> Unit, onAdvance: () -> Unit) {
             fontFamily = FontFamily.SansSerif,
             modifier = Modifier
                 .border(1.dp, if (card.status == "doing") Palette.Ok else Palette.Line)
-                .clickable(onClick = onAdvance)
+                .clickable(role = Role.Button, onClick = onAdvance)
                 .padding(horizontal = 12.dp, vertical = 7.dp),
         )
     }
@@ -332,7 +330,7 @@ private fun AddSheet(
             Text("刊登一件工作", color = Palette.Text, fontSize = Type.Head,
                 fontWeight = FontWeight.Bold)
 
-            Field(title, { title = it }, "像「助理－看板重寫」這樣寫")
+            Field(title, "像「助理－看板重寫」這樣寫") { title = it }
 
             Text("放進哪一版", color = Palette.TextDim, fontSize = Type.Meta,
                 fontFamily = FontFamily.SansSerif)
@@ -367,7 +365,7 @@ private fun EditSheet(
             Modifier.fillMaxWidth().padding(horizontal = Space.Screen, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Field(title, { title = it }, "工作名稱")
+            Field(title, "工作名稱") { title = it }
 
             Text("放進哪一版", color = Palette.TextDim, fontSize = Type.Meta,
                 fontFamily = FontFamily.SansSerif)
@@ -377,7 +375,7 @@ private fun EditSheet(
 
             Text("備註（卡在哪、下一步）", color = Palette.TextDim, fontSize = Type.Meta,
                 fontFamily = FontFamily.SansSerif)
-            Field(note, { note = it }, "選填", maxLines = 3)
+            Field(note, "選填", maxLines = 3, lineHeight = Type.BodyLine) { note = it }
 
             ActionButton("存起來", title != card.title || note != card.note) {
                 onPatch(null, null, title.trim(), note)
@@ -386,7 +384,7 @@ private fun EditSheet(
             Row(
                 Modifier.fillMaxWidth()
                     .border(1.dp, Palette.Danger)
-                    .clickable(onClick = onArchive)
+                    .clickable(role = Role.Button, onClick = onArchive)
                     .padding(horizontal = 14.dp, vertical = 12.dp),
             ) { Text("下架這件工作", color = Palette.Danger, fontSize = Type.Body) }
 
@@ -405,7 +403,7 @@ private fun StatusPicker(current: String, onPick: (String) -> Unit) {
                 Modifier.weight(1f)
                     .background(if (sel) Palette.Text else Palette.SurfaceHi)
                     .border(1.dp, if (sel) Palette.Text else Palette.Line)
-                    .clickable { onPick(k) }
+                    .clickable(role = Role.RadioButton) { onPick(k) }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -425,7 +423,7 @@ private fun UrgentToggle(urgent: Boolean, onToggle: () -> Unit) {
         Modifier.fillMaxWidth()
             .background(if (urgent) Palette.DangerSoft else Palette.SurfaceHi)
             .border(1.dp, if (urgent) Palette.Danger else Palette.Line)
-            .clickable(onClick = onToggle)
+            .clickable(role = Role.Checkbox, onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -445,28 +443,4 @@ private fun UrgentToggle(urgent: Boolean, onToggle: () -> Unit) {
     }
 }
 
-/** 這一頁的輸入框長相統一在這裡，免得兩個 sheet 各寫一份會走鐘。 */
-@Composable
-private fun Field(
-    value: String, onChange: (String) -> Unit,
-    hint: String, maxLines: Int = 1,
-) {
-    Box(
-        Modifier.fillMaxWidth().background(Palette.SurfaceHi)
-            .border(1.dp, Palette.Line).padding(14.dp),
-    ) {
-        if (value.isEmpty()) {
-            Text(hint, color = Palette.TextFaint, fontSize = Type.Body)
-        }
-        BasicTextField(
-            value = value, onValueChange = onChange,
-            textStyle = TextStyle(
-                color = Palette.Text, fontSize = Type.Body,
-                lineHeight = Type.BodyLine, fontFamily = Fonts.Base,
-            ),
-            cursorBrush = SolidColor(Palette.Accent),
-            maxLines = maxLines,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-}
+// 輸入框走 Components.kt 的 Field，跟其他頁同一種長相（2026-09-03 收斂）

@@ -14,18 +14,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DropdownMenuItem
@@ -40,8 +38,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.butlerkit.app.data.Prefs
@@ -80,19 +78,26 @@ fun SettingsScreen(state: ChatState, prefs: Prefs, client: ButlerClient,
             if (s == null) {
                 Text("讀取中…", color = Palette.TextFaint, fontSize = Type.Meta)
             } else {
-                PickerRow(
-                    label = "預設模型",
-                    value = s.model ?: "（內建預設）",
-                    options = listOf("（內建預設）") + s.models,
-                ) { picked ->
-                    onApply(picked.takeIf { it != "（內建預設）" }, s.effort)
-                }
-                PickerRow(
-                    label = "思考強度",
-                    value = s.effort ?: "（內建預設）",
-                    options = listOf("（內建預設）") + s.efforts,
-                ) { picked ->
-                    onApply(s.model, picked.takeIf { it != "（內建預設）" })
+                // 跟對話面板同一個選擇器（ModelPicker.kt）：官方顯示名＋說明，
+                // 思考強度依模型給。這裡選的是帳號預設，沒單獨覆寫的對話都吃它
+                var pick by remember { mutableStateOf(false) }
+                ModelSummaryRow(
+                    modelText = s.model?.let { modelDisplay(it, s.infos) } ?: "內建預設",
+                    effortText = s.effort ?: "預設",
+                ) { pick = true }
+                if (pick) {
+                    ModelPickerSheet(
+                        infos = s.infos,
+                        efforts = s.efforts,
+                        selectedModel = s.model.orEmpty(),
+                        selectedEffort = s.effort.orEmpty(),
+                        followLabel = "內建預設",
+                        effectiveModel = "",
+                        effectiveEffort = "",
+                        onPickModel = { onApply(it.takeIf { v -> v.isNotBlank() }, s.effort) },
+                        onPickEffort = { onApply(s.model, it.takeIf { v -> v.isNotBlank() }) },
+                        onDismiss = { pick = false },
+                    )
                 }
             }
         }
@@ -106,41 +111,21 @@ fun SettingsScreen(state: ChatState, prefs: Prefs, client: ButlerClient,
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                BasicTextField(
-                    value = cwd,
-                    onValueChange = { cwd = it; cwdMsg = null },
-                    modifier = Modifier.weight(1f)
-                        .background(Palette.SurfaceHi, Radii.Chip)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        fontSize = Type.Meta, color = Palette.Text,
-                    ),
-                    singleLine = true,
-                    cursorBrush = SolidColor(Palette.Accent),
-                    decorationBox = { inner ->
-                        Box {
-                            if (cwd.isEmpty()) {
-                                Text("C:\\Users\\you\\...", color = Palette.TextFaint,
-                                    fontSize = Type.Meta)
-                            }
-                            inner()
-                        }
-                    },
-                )
-                Button(
-                    onClick = {
-                        scope.launch {
-                            onSetCwd(cwd)
-                                .onSuccess { cwdMsg = "換好了" }
-                                .onFailure { cwdMsg = it.message ?: "失敗" }
-                        }
-                    },
-                    enabled = cwd.isNotBlank(),
-                    shape = Radii.Chip,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Palette.Accent, contentColor = Palette.Bg,
-                    ),
-                ) { Text("套用", fontSize = Type.Meta) }
+                Field(
+                    cwd, "C:\\Users\\you\\...",
+                    modifier = Modifier.weight(1f), fontSize = Type.Meta,
+                    shape = Radii.Chip, pad = SmallPad,
+                ) { cwd = it; cwdMsg = null }
+                ActionButton(
+                    "套用", enabled = cwd.isNotBlank(),
+                    modifier = Modifier, fontSize = Type.Meta, pad = SmallBtnPad,
+                ) {
+                    scope.launch {
+                        onSetCwd(cwd)
+                            .onSuccess { cwdMsg = "換好了" }
+                            .onFailure { cwdMsg = it.message ?: "失敗" }
+                    }
+                }
             }
             cwdMsg?.let {
                 Text(it, fontSize = Type.Tiny,
@@ -167,25 +152,23 @@ fun SettingsScreen(state: ChatState, prefs: Prefs, client: ButlerClient,
                     "助理該通知你的時候照樣會通知。",
                 color = Palette.TextFaint, fontSize = Type.Tiny,
             )
-            Button(
-                onClick = {
-                    runCatching {
-                        ctx.startActivity(
-                            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
-                                .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
-                                .putExtra(
-                                    Settings.EXTRA_CHANNEL_ID,
-                                    NotifyKind.Service.channelId,
-                                )
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
-                },
-                shape = Radii.Chip,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Palette.SurfaceHi, contentColor = Palette.Text,
-                ),
-            ) { Text("關掉「助理在待命」那條", fontSize = Type.Meta) }
+            ActionButton(
+                "關掉「助理在待命」那條",
+                tint = Palette.SurfaceHi, textColor = Palette.Text,
+                modifier = Modifier, fontSize = Type.Meta, pad = SmallBtnPad,
+            ) {
+                runCatching {
+                    ctx.startActivity(
+                        Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                            .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                            .putExtra(
+                                Settings.EXTRA_CHANNEL_ID,
+                                NotifyKind.Service.channelId,
+                            )
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }
 
             // Android 14 起「全螢幕通知」是可以被使用者關掉的許可。關掉之後鬧鐘
             // 照響，但螢幕不會亮起來、也沒有蓋滿畫面的關閉鈕——睡著的人就這樣錯過。
@@ -196,22 +179,19 @@ fun SettingsScreen(state: ChatState, prefs: Prefs, client: ButlerClient,
                         "螢幕不會亮起來蓋滿畫面——睡覺時很可能錯過。",
                     color = Palette.Warn, fontSize = Type.Tiny,
                 )
-                Button(
-                    onClick = {
-                        runCatching {
-                            ctx.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
-                                    Uri.parse("package:${ctx.packageName}"),
-                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                        }
-                    },
-                    shape = Radii.Chip,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Palette.Warn, contentColor = Palette.Bg,
-                    ),
-                ) { Text("去開啟全螢幕鬧鐘", fontSize = Type.Meta) }
+                ActionButton(
+                    "去開啟全螢幕鬧鐘", tint = Palette.Warn,
+                    modifier = Modifier, fontSize = Type.Meta, pad = SmallBtnPad,
+                ) {
+                    runCatching {
+                        ctx.startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                                Uri.parse("package:${ctx.packageName}"),
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }
             }
         }
 
@@ -229,6 +209,21 @@ fun SettingsScreen(state: ChatState, prefs: Prefs, client: ButlerClient,
                     InfoRow("目前對話 context", "%,d tokens".format(it.ctxTokens))
                 }
             }
+        }
+
+        // 系統：伺服器那邊由啟動腳本決定、App 只能看的開關。放這裡是讓人知道
+        // 「助理動系統之前會不會先問」——這件事關掉了卻沒人知道才可怕
+        SettingCard("系統") {
+            Text(
+                "破壞性指令確認：" +
+                    when (s?.confirmDangerous) {
+                        null -> "（還沒拿到）"
+                        true -> "開啟"
+                        false -> "關閉"
+                    } + "（由啟動腳本決定，這裡改不了）",
+                color = if (s?.confirmDangerous == false) Palette.Warn else Palette.TextDim,
+                fontSize = Type.Meta, lineHeight = Type.MetaLine,
+            )
         }
 
         // 放在最後：這是「出事才會用到」的東西，不該擠在每天要調的設定前面。
@@ -274,7 +269,7 @@ private fun DevicesCard(client: ButlerClient) {
             Text(
                 "$it（點一下重試）", color = Palette.Danger, fontSize = Type.Meta,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                    .clickable { reload++ },
+                    .clickable(role = Role.Button) { reload++ },
             )
         }
         val list = devices
@@ -304,7 +299,7 @@ private fun DevicesCard(client: ButlerClient) {
                         Text(
                             "撤銷", color = Palette.Danger, fontSize = Type.Meta,
                             modifier = Modifier.clip(Radii.Chip)
-                                .clickable { arming = d.hash }
+                                .clickable(role = Role.Button) { arming = d.hash }
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
                         )
                     }
@@ -324,39 +319,28 @@ private fun DevicesCard(client: ButlerClient) {
                             lineHeight = Type.MetaLine,
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { arming = null },
-                                shape = Radii.Chip,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Palette.SurfaceHi,
-                                    contentColor = Palette.Text,
-                                ),
-                            ) { Text("算了", fontSize = Type.Meta) }
-                            Button(
-                                onClick = {
-                                    // 送出前驗一次本人。沒設鎖屏的手機會直接放行
-                                    // （見 needsDeviceAuth）——擋下去只會讓那台
-                                    // 手機永遠撤不了東西。
-                                    auth(true, true) {
-                                        arming = null
-                                        busy = true
-                                        scope.launch {
-                                            client.revokeDevice(d.hash)
-                                                .onFailure { err = humanError(it) }
-                                            busy = false
-                                            reload++   // 不管成敗都重拉，以清單為準
-                                        }
+                            ActionButton(
+                                "算了", tint = Palette.SurfaceHi, textColor = Palette.Text,
+                                modifier = Modifier, fontSize = Type.Meta, pad = SmallBtnPad,
+                            ) { arming = null }
+                            ActionButton(
+                                "確定撤銷", enabled = !busy, tint = Palette.Danger,
+                                modifier = Modifier, fontSize = Type.Meta, pad = SmallBtnPad,
+                            ) {
+                                // 送出前驗一次本人。沒設鎖屏的手機會直接放行
+                                // （見 needsDeviceAuth）——擋下去只會讓那台
+                                // 手機永遠撤不了東西。
+                                auth(true, true) {
+                                    arming = null
+                                    busy = true
+                                    scope.launch {
+                                        client.revokeDevice(d.hash)
+                                            .onFailure { err = humanError(it) }
+                                        busy = false
+                                        reload++   // 不管成敗都重拉，以清單為準
                                     }
-                                },
-                                enabled = !busy,
-                                shape = Radii.Chip,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Palette.Danger,
-                                    contentColor = Palette.Bg,
-                                    disabledContainerColor = Palette.SurfaceHi,
-                                    disabledContentColor = Palette.TextFaint,
-                                ),
-                            ) { Text("確定撤銷", fontSize = Type.Meta) }
+                                }
+                            }
                         }
                     }
                 }
@@ -436,44 +420,41 @@ private fun LocationRows() {
         color = Palette.TextDim, fontSize = Type.Tiny,
     )
     if (!fine && !coarse) {
-        Button(
-            onClick = {
-                if (asked) {
-                    // 已經問過一輪還是沒有：系統不會再彈窗了，只能帶去設定頁
-                    runCatching {
-                        ctx.startActivity(
-                            Intent(
-                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.parse("package:${ctx.packageName}"),
-                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
-                } else {
-                    ask.launch(arrayOf(
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.ACCESS_COARSE_LOCATION,
-                    ))
+        ActionButton(
+            if (asked) "去系統設定開啟" else "允許助理知道我在哪",
+            tint = Palette.SurfaceHi, textColor = Palette.Text,
+            modifier = Modifier, fontSize = Type.Meta, pad = SmallBtnPad,
+        ) {
+            if (asked) {
+                // 已經問過一輪還是沒有：系統不會再彈窗了，只能帶去設定頁
+                runCatching {
+                    ctx.startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:${ctx.packageName}"),
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
                 }
-            },
-            shape = Radii.Chip,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Palette.SurfaceHi, contentColor = Palette.Text,
-            ),
-        ) { Text(if (asked) "去系統設定開啟" else "允許助理知道我在哪", fontSize = Type.Meta) }
+            } else {
+                ask.launch(arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ))
+            }
+        }
     }
 }
 
+/** 設定頁的卡片＝共用的 [Card] 加一行標題。底色、邊框、內縮都在那邊定，這裡不再抄一份。 */
 @Composable
-private fun SettingCard(title: String, content: @Composable () -> Unit) = Column(
-    Modifier.fillMaxWidth().background(Palette.Surface, Radii.Card)
-        // 邊框與標題字級都跟工具頁的卡片對齊
-        .border(1.dp, Palette.Line, Radii.Card)
-        .padding(Space.Inner),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
-) {
+private fun SettingCard(title: String, content: @Composable () -> Unit) = Card {
     Text(title, color = Palette.Text, fontSize = Type.Title, fontWeight = FontWeight.Bold)
     content()
 }
+
+/** 排在輸入框旁邊的小輸入框與小按鈕用的內縮：設定頁的列比較矮。 */
+private val SmallPad = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+private val SmallBtnPad = PaddingValues(horizontal = 18.dp, vertical = 10.dp)
 
 /** Android 14 以下一律可用；14 起是可被關掉的許可，要問系統。 */
 private fun canUseFullScreen(ctx: android.content.Context): Boolean {
@@ -501,34 +482,15 @@ private fun HostRow(prefs: Prefs) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("電腦位址", color = Palette.TextDim, fontSize = Type.Meta)
-        BasicTextField(
-            value = host,
-            onValueChange = { host = it; saved = false },
-            modifier = Modifier.weight(1f)
-                .background(Palette.SurfaceHi, Radii.Chip)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            textStyle = androidx.compose.ui.text.TextStyle(
-                fontSize = Type.Meta, color = Palette.Text,
-            ),
-            singleLine = true,
-            cursorBrush = SolidColor(Palette.Accent),
-            decorationBox = { inner ->
-                Box {
-                    if (host.isEmpty()) {
-                        Text("100.x.x.x:47362", color = Palette.TextFaint, fontSize = Type.Meta)
-                    }
-                    inner()
-                }
-            },
-        )
-        Button(
-            onClick = { prefs.host = host.trim(); saved = true },
-            enabled = host.isNotBlank() && host.trim() != prefs.host,
-            shape = Radii.Chip,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Palette.Accent, contentColor = Palette.Bg,
-            ),
-        ) { Text("存", fontSize = Type.Meta) }
+        Field(
+            host, "your-pc.tailXXXX.ts.net:47362",
+            modifier = Modifier.weight(1f), fontSize = Type.Meta,
+            shape = Radii.Chip, pad = SmallPad,
+        ) { host = it; saved = false }
+        ActionButton(
+            "存", enabled = host.isNotBlank() && host.trim() != prefs.host,
+            modifier = Modifier, fontSize = Type.Meta, pad = SmallBtnPad,
+        ) { prefs.host = host.trim(); saved = true }
     }
     if (saved) {
         Text("存好了，重開 App 生效。", color = Palette.Ok, fontSize = Type.Tiny)
@@ -550,6 +512,8 @@ private fun PickerRow(
     label: String, value: String, options: List<String>,
     onPick: (String) -> Unit,
 ) {
+    // 模型／思考強度已改走 ModelPicker.kt 的面板；這個下拉列留給還沒搬過去的
+    // 一般選項（目前沒有呼叫端，下一次有需要再用）
     var open by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().clickable { open = true }.padding(vertical = 4.dp),

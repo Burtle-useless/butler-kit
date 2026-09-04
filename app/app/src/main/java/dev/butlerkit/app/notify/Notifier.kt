@@ -221,7 +221,7 @@ object Notifier {
         }
         val summary = NotificationCompat.Builder(ctx, NotifyKind.TaskDone.channelId)
             .setSmallIcon(R.drawable.ic_notify)
-            .setContentTitle(ctx.getString(R.string.app_name))
+            .setContentTitle("助理")
             .setContentText("${kids.size} 則")
             .setStyle(style)
             .setGroup(GROUP_CHAT)
@@ -245,6 +245,13 @@ object Notifier {
         val ids = NotifyKind.entries.filter { it.grouped }.map { idOf(it, convId) }.toSet()
         ids.forEach { runCatching { nm.cancel(it) } }
         syncSummary(ctx, ids)
+    }
+
+    /** 只收掉某對話的某一種通知（例如題目在別台答完了，收「等你回答」）。 */
+    fun clearKind(ctx: Context, kind: NotifyKind, convId: String?) {
+        val id = idOf(kind, convId)
+        runCatching { NotificationManagerCompat.from(ctx).cancel(id) }
+        if (kind.grouped) syncSummary(ctx, setOf(id))
     }
 
     /**

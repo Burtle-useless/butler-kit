@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **只給 debug build。** 同名檔案在 debug variant 會整份蓋掉 main 的那份，
+  所以 main 裡有的每一條這裡都要再寫一次——漏掉一條的症狀是「debug 版連得上
+  的位址，release 版連不上」，反過來也會發生。
+
+  比 main 多的只有 10.0.2.2：那是 Android 模擬器看出去的「這台電腦」
+  （host loopback 的固定別名）。加它的理由是驗證畫面——模擬器要連到本機起的
+  臨時伺服器，而那個是 http。
+
+  自己開發時要連的其他明文位址（區網 IP、tailnet IP）也加在下面這一區，
+  release 不受影響：那份仍然只放行 ts.net，其餘一律禁止明文。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Tailscale MagicDNS 網域，位址變動仍能解析（跟 main 那份同一條） -->
+        <domain includeSubdomains="true">ts.net</domain>
+        <!-- 模擬器看到的本機。只有 debug 有這條 -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

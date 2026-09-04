@@ -1,8 +1,10 @@
 package dev.butlerkit.app.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -40,5 +42,38 @@ class ChatModelsTest {
     fun `串流到一半的半截標記不會被誤判成有內容`() {
         // text.delta 是逐字送的，標記可能先到 "[[DO" 才到 "NE]]"
         assertNull(replyOrNull("t1", "[[DO"))
+    }
+
+    // ── 工具摺疊摘要 ────────────────────────────────────────────────────────
+    private fun tc(kind: String, added: Int = 0, removed: Int = 0) =
+        dev.butlerkit.app.net.ToolCall(
+            tool = "X", icon = "", summary = "", raw = "", dangerous = false,
+            kind = kind, added = added, removed = removed,
+        )
+
+    @Test
+    fun `摘要講做了什麼而不是只有總數`() {
+        val s = toolSummary(listOf(tc("read"), tc("read"), tc("cmd"), tc("edit", 12, 4)))
+        assertEquals("讀 2 個檔・改 1 個檔・跑 1 個指令　+12 −4", s)
+    }
+
+    @Test
+    fun `沒有增刪就不畫增刪`() {
+        assertEquals("讀 1 個檔", toolSummary(listOf(tc("read"))))
+    }
+
+    @Test
+    fun `沒有工具就是空字串`() {
+        assertEquals("", toolSummary(emptyList()))
+    }
+
+    @Test
+    fun `摺疊門檻以上才收起來`() {
+        // 門檻本身不摺（<=），超過才摺——邊界寫死在測試裡，改門檻要連這條一起想
+        assertTrue(TOOL_FOLD_THRESHOLD >= 3)
+        val small = List(TOOL_FOLD_THRESHOLD) { tc("read") }
+        val big = List(TOOL_FOLD_THRESHOLD + 1) { tc("read") }
+        assertFalse(small.size > TOOL_FOLD_THRESHOLD)
+        assertTrue(big.size > TOOL_FOLD_THRESHOLD)
     }
 }

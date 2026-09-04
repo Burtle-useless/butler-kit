@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色版：parent 換成非 Light，系統列的時鐘與圖示轉淺色。
+         畫面本身的配色仍由 Compose 的 ButlerTheme 負責（它讀 isSystemInDarkTheme），
+         這裡只管啟動畫面與系統列——那兩個在 Compose 起來之前就已經畫出去了，
+         漏掉的症狀是深色模式下冷啟動先閃一幕白。 -->
+    <style name="Theme.Butler" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

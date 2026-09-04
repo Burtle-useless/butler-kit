@@ -34,9 +34,14 @@ class ButlerApp : Application() {
 
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
-                // 回前景：ViewModel 接手連線
+                // 回前景：ViewModel 接手連線。**不在這裡 stopService。**服務自己看
+                // AppForeground 退場（ButlerService.onCreate）。從外面停的話會撞上
+                // 「startForegroundService 已呼叫、startForeground 還沒登記」的空窗——
+                // 更新 APK 那一刻必踩：MY_PACKAGE_REPLACED 拉起服務、使用者同時打開
+                // App，這裡一 stop 整個 App 就被 ForegroundServiceDidNotStartInTimeException
+                // 殺掉（2026-09-03 模擬器 logcat 實錄：「Bringing down service while still
+                // waiting for start foreground」）。
                 AppForeground.visible = true
-                ButlerService.stop(this@ButlerApp)
                 // 打開 App 的當下最可能低頭看桌面 widget，順手把額度拉新一次。
                 // 定期工作最快也要 15 分鐘才輪到，中間那段就是靠這裡補
                 UsageWorker.runOnce(this@ButlerApp)

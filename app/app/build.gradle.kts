@@ -1,9 +1,22 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
+
+// 從 app/local.properties 讀祕密，塞給 BuildConfig。
+//
+// **不要把憑證寫進原始碼**——這個 repo 是公開的。local.properties 在 .gitignore 裡。
+// 讀不到就給空字串，而不是讓 build 失敗：只有走 Cloudflare Tunnel + Access 的人
+// 需要這兩個值，其他連線方式（Tailscale、區網、自架 VPN）留空即可，
+// AccessAuth 看到空字串就一個標頭都不加（見 net/AccessAuth.kt）。
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+fun secret(key: String): String = (localProps.getProperty(key) ?: "").trim()
 
 android {
     namespace = "dev.butlerkit.app"
@@ -22,6 +35,9 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+
+        buildConfigField("String", "CF_ACCESS_CLIENT_ID", "\"${secret("cfAccessClientId")}\"")
+        buildConfigField("String", "CF_ACCESS_CLIENT_SECRET", "\"${secret("cfAccessClientSecret")}\"")
     }
 
     buildTypes {
@@ -42,6 +58,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // AGP 8 起預設關閉，不開的話上面那兩個 buildConfigField 不會產生任何東西
+        buildConfig = true
     }
 }
 

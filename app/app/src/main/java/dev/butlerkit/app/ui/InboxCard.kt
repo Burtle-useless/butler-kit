@@ -26,6 +26,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -51,6 +52,7 @@ fun InboxCard(client: ButlerClient) {
     val downloading by InboxRepo.downloading.collectAsState()
     val saved by InboxRepo.saved.collectAsState()
     val staged by InboxRepo.staged.collectAsState()
+    val installed by InboxRepo.installed.collectAsState()
     val error by InboxRepo.error.collectAsState()
     var expanded by remember { mutableStateOf(false) }
 
@@ -72,7 +74,7 @@ fun InboxCard(client: ButlerClient) {
                 "重新整理", color = Palette.Accent, fontSize = Type.Tiny,
                 modifier = Modifier.minimumInteractiveComponentSize()
                     .clip(Radii.Chip)
-                    .clickable { scope.launch { InboxRepo.refresh(client) } }
+                    .clickable(role = Role.Button) { scope.launch { InboxRepo.refresh(client) } }
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
@@ -80,7 +82,7 @@ fun InboxCard(client: ButlerClient) {
         error?.let {
             Text(
                 it, color = Palette.Danger, fontSize = Type.Meta,
-                modifier = Modifier.clickable { InboxRepo.clearError() },
+                modifier = Modifier.clickable(role = Role.Button) { InboxRepo.clearError() },
             )
         }
 
@@ -103,6 +105,7 @@ fun InboxCard(client: ButlerClient) {
                 busy = f.id in downloading,
                 savedAt = saved[f.id],
                 ready = ready,
+                installed = ApkUpdate.isApk(f.name) && f.id in installed,
                 onAct = {
                     if (ready) InboxRepo.install(ctx, f.id)
                     else InboxRepo.startDownload(ctx, client, f)
@@ -113,7 +116,7 @@ fun InboxCard(client: ButlerClient) {
             Row(
                 Modifier.fillMaxWidth()
                     .clip(Radii.Chip)
-                    .clickable { expanded = !expanded }
+                    .clickable(role = Role.Button) { expanded = !expanded }
                     .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -140,11 +143,12 @@ private fun FileRow(
     savedAt: String?,
     /** APK 而且已經下載好，按鈕是「安裝」不是「下載」。 */
     ready: Boolean,
+    /** 這一版已經裝起來了，右邊那顆按鈕整個收掉——沒有動作可做。 */
+    installed: Boolean,
     onAct: () -> Unit,
 ) = Row(
-    // Radii.Field 不是 Chip：備註一長、或系統字體放大到 1.3 倍，第二行就會折成兩行，
-    // 999dp 的全膠囊跟著漲成一顆巨大藥丸，右邊的「下載」還會變成正圓。
-    // 這一列的高度是內容決定的，不能用只在單行成立的形狀
+    // Radii.Field（12dp）不是 Chip（8dp）：這一列高度由內容決定（備註一長、或系統
+    // 字體放大到 1.3 倍就會折成兩行），是輸入框那一級的容器，不是單行小標籤
     Modifier.fillMaxWidth().background(Palette.SurfaceHi, Radii.Field)
         .padding(horizontal = 12.dp, vertical = 10.dp),
     verticalAlignment = Alignment.CenterVertically,
@@ -161,6 +165,7 @@ private fun FileRow(
         // 第二行輪流講最重要的那件事：可以裝了 > 存好了 > 原檔不在了 > 備註 > 大小與時間
         Text(
             when {
+                installed -> "已更新到這一版"
                 ready -> "已經下載好，按一下就裝"
                 savedAt != null -> "已存到 $savedAt"
                 file.gone -> "電腦上那個檔案已經不在了"
@@ -168,7 +173,7 @@ private fun FileRow(
                 else -> "${fmtSize(file.bytes)} · ${file.at.replace('T', ' ')}"
             },
             color = when {
-                ready || savedAt != null -> Palette.Ok
+                installed || ready || savedAt != null -> Palette.Ok
                 file.gone -> Palette.Danger
                 else -> Palette.TextFaint
             },
@@ -181,13 +186,16 @@ private fun FileRow(
         busy -> CircularProgressIndicator(
             Modifier.size(18.dp), color = Palette.Accent, strokeWidth = 2.dp,
         )
+        // 已經裝起來的更新沒有下一步。左邊那行字已經說完了，右邊留一顆按鈕
+        // 只會讓人以為還有什麼要按
+        installed -> Unit
         file.gone -> Unit
-        // 同樣不用 Chip：「下載」只有兩個字，全膠囊會把它捏成一顆正圓
+        // 按鈕一律 Radii.Field，跟 ActionButton 同一檔
         else -> Box(
             Modifier.clip(Radii.Field)
                 // 「再存一次」是收尾動作，不該跟主要動作搶同一個顏色
                 .background(if (!ready && savedAt != null) Palette.Surface else Palette.Accent)
-                .clickable(onClick = onAct)
+                .clickable(role = Role.Button, onClick = onAct)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             Text(

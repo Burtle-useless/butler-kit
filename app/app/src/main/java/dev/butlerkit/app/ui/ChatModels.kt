@@ -1,6 +1,8 @@
 package dev.butlerkit.app.ui
 
 import dev.butlerkit.app.net.AskRequest
+import dev.butlerkit.app.net.BgTask
+import dev.butlerkit.app.net.ToolCall
 
 /** 超過這個大小的圖不自動抓回來預覽，改給取件單讓人自己決定。 */
 const val PREVIEW_MAX_BYTES = 8L * 1024 * 1024
@@ -34,8 +36,8 @@ fun cleanMarkers(s: String): String {
  * 那則清完是空字串，照樣畫出來就是一顆沒有內容的孤兒頭像杵在真回覆上面——
  * 使用者看到的是「同一句話冒出兩個助理」。
  */
-fun replyOrNull(turnId: String, text: String): TraceItem.Reply? =
-    if (cleanMarkers(text).isBlank()) null else TraceItem.Reply(turnId, text)
+fun replyOrNull(turnId: String, text: String, atMs: Long = 0L): TraceItem.Reply? =
+    if (cleanMarkers(text).isBlank()) null else TraceItem.Reply(turnId, text, atMs)
 
 /**
  * 軌跡上的一列。
@@ -60,45 +62,38 @@ sealed interface TraceItem {
         val msgId: String = "",
         val queued: Boolean = false,
         val dropped: Boolean = false,
+        /**
+         * 這則是**插進正在跑的回合**的（不是排隊）。
+         *
+         * 伺服器一直有送這個旗標。不用的話插話與排隊的氣泡長得一模一樣，
+         * 使用者會以為插話沒生效；而且插進去之後模型可能正在跑一個長工具，
+         * 要過一會才反應得到，那段空窗期畫面上什麼都不說的話，感覺就是沒進去。
+         */
+        val steered: Boolean = false,
+        /** 這則的時刻（epoch 毫秒）。0＝不知道（舊伺服器、本地造的項目）。 */
+        val atMs: Long = 0L,
+        /**
+         * 跟這則一起送出的附件。**畫面畫的是它，不是路徑文字**——路徑只在伺服器
+         * 組給模型的那一份出現（見 engine.turn.stamp）。
+         */
+        val attachments: List<Attachment> = emptyList(),
     ) : TraceItem
 
     /** 模型這一步在想什麼（step.commit 的思考摘要，已定稿不會再變）。 */
     data class Thinking(override val turnId: String, val text: String) : TraceItem
 
     /**
-     * 一個「階段」＝CC 的一句說明＋其下累積的工具統計（cc-bot 摺疊風格）。
-     * 主行是說明文字，底下一行小灰字統計「讀 2 個檔案・執行 1 個指令 +28 −0」，
-     * 點統計行展開每一則工具明細。
+     * 一個「階段」＝CC 的一句說明＋其下累積的工具呼叫，畫面上一條工具一行。
+     *
+     * 原本這裡還有一個 `summary`，把工具摺成「讀 2 個檔案・執行 1 個指令 +28 −0」
+     * 一行統計，明細要點開才看得到。2026-08-21 改成逐條直接列（理由見
+     * ChatScreen.StageRow），統計就沒有讀者了，跟著刪掉。
      */
     data class Stage(
         override val turnId: String,
         val text: String,
         val tools: List<ToolCall> = emptyList(),
-    ) : TraceItem {
-        /** cc-bot _fmt_seg_summary 的前端版：分類計數＋新增檔名＋增刪行數。 */
-        val summary: String
-            get() {
-                if (tools.isEmpty()) return ""
-                val parts = mutableListOf<String>()
-                fun n(kind: String) = tools.count { it.kind == kind }
-                if (n("read") > 0) parts += "讀 ${n("read")} 個檔案"
-                if (n("search") > 0) parts += "搜尋 ${n("search")} 次"
-                if (n("cmd") > 0) parts += "執行 ${n("cmd")} 個指令"
-                if (n("web") > 0) parts += "上網 ${n("web")} 次"
-                tools.mapNotNull { it.file.takeIf(String::isNotBlank) }
-                    .distinct().take(2).forEach { parts += "新增 $it" }
-                val edits = tools.count { it.kind == "edit" && it.file.isBlank() }
-                if (edits > 0) parts += "改 $edits 個檔案"
-                if (n("other") > 0) parts += "其他 ${n("other")}"
-                val added = tools.sumOf { it.added }
-                val removed = tools.sumOf { it.removed }
-                val diff = buildString {
-                    if (added > 0) append(" +$added")
-                    if (removed > 0) append(" −$removed")
-                }
-                return parts.joinToString("・") + diff
-            }
-    }
+    ) : TraceItem
 
     /**
      * 破壞性指令：**永遠單獨一列、永遠展開、不併入統計**。
@@ -106,7 +101,11 @@ sealed interface TraceItem {
      */
     data class DangerTool(override val turnId: String, val call: ToolCall) : TraceItem
 
-    data class Reply(override val turnId: String, val markdown: String) : TraceItem
+    data class Reply(
+        override val turnId: String,
+        val markdown: String,
+        val atMs: Long = 0L,
+    ) : TraceItem
 
     /**
      * 助理傳了一個檔案過來。
@@ -158,20 +157,81 @@ sealed interface TraceItem {
         override val turnId: String,
         val kind: String,
         val detail: String,
+        val atMs: Long = 0L,
+    ) : TraceItem
+
+    /**
+     * 助理自己醒來的那一輪開頭的一行說明（`turn.start` 的 origin="wake"）。
+     *
+     * 背景工作跑完後 CLI 會自己另起一輪讓助理讀結果接著講——這一輪不是任何人問的，
+     * 畫面上沒有使用者氣泡可以當脈絡，憑空冒出一段回覆會讓人找不到頭。跟官方
+     * 終端機一樣補一行「為什麼醒來」。刻意不是氣泡：它不是誰說的話。
+     */
+    data class WakeNote(
+        override val turnId: String,
+        val text: String,
+        val atMs: Long = 0L,
     ) : TraceItem
 }
 
-data class ToolCall(
-    val tool: String,
-    val icon: String,
-    val summary: String,
-    val raw: String,
-    val dangerous: Boolean,
-    val kind: String = "other",
-    val added: Int = 0,
-    val removed: Int = 0,
-    val file: String = "",
-)
+/** 這一列的時刻（epoch 毫秒）；沒有時間概念的列（工具、思考、卡片）一律 0。 */
+val TraceItem.atMs: Long
+    get() = when (this) {
+        is TraceItem.UserMsg -> atMs
+        is TraceItem.Reply -> atMs
+        is TraceItem.WakeNote -> atMs
+        is TraceItem.ErrorItem -> atMs
+        else -> 0L
+    }
+
+/**
+ * 第 [i] 列前面要不要插日期分隔，要的話回傳那行字（「9月3日 週三」），不要就 null。
+ *
+ * 規則跟成熟的聊天 App 一樣：只在**跨日**的地方插一條，不是每則都印時間。
+ * 「跨日」比的是這一列與**前一個有時間的列**，中間夾著沒時間的工具列不算數；
+ * 開頭第一個有時間的列前面也插一條，不然對話的起點沒有日期。
+ */
+fun dayLabelBefore(
+    items: List<TraceItem>,
+    i: Int,
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+): String? {
+    val ms = items[i].atMs
+    if (ms <= 0L) return null
+    val day = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate()
+    for (j in i - 1 downTo 0) {
+        val prev = items[j].atMs
+        if (prev <= 0L) continue
+        val prevDay = java.time.Instant.ofEpochMilli(prev).atZone(zone).toLocalDate()
+        return if (prevDay == day) null else dayLabel(day)
+    }
+    return dayLabel(day)
+}
+
+private fun dayLabel(d: java.time.LocalDate): String {
+    val week = "一二三四五六日"[d.dayOfWeek.value - 1]
+    val year = if (d.year == java.time.LocalDate.now().year) "" else "${d.year}年"
+    return "$year${d.monthValue}月${d.dayOfMonth}日 週$week"
+}
+
+/** 長按選單裡那行「15:32」。0 就不顯示，回 null。 */
+fun clockLabel(ms: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String? {
+    if (ms <= 0L) return null
+    val t = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalTime()
+    return "%02d:%02d".format(t.hour, t.minute)
+}
+
+/** wake 回合開頭那行字。伺服器對不上是哪件工作時就只說「接著說」。 */
+fun wakeNoteText(reason: BgTask?): String {
+    if (reason == null || reason.desc.isBlank()) return "助理接著說"
+    val how = when (reason.status) {
+        "completed" -> "完成"
+        "failed" -> "失敗"
+        "stopped" -> "中止"
+        else -> ""
+    }
+    return "背景工作「${reason.desc}」$how，助理接手"
+}
 
 /**
  * 底部狀態列的內容。轉圈動畫與計時由 UI 本地跑，不為此往返網路。
@@ -190,7 +250,7 @@ data class TurnStatus(
     val effort: String,
     val tools: Int,
     val ctxTokens: Int,
-    val bg: List<String>,
+    val bg: List<BgTask>,
     val phase: String = "",
     val note: String = "",
 )
@@ -213,11 +273,19 @@ data class ConvStatus(
 )
 
 /**
- * 已經傳到電腦上、等著跟下一則訊息一起送出的檔案。
- * [path] 是**電腦上的絕對路徑**——助理靠它用 Read 工具讀，
- * 所以附件的本體從來不進聊天內容，只有路徑會。
+ * 一個要跟訊息一起送出的附件（已經傳到電腦上，等著跟下一則訊息一起走）。
+ *
+ * [path] 是**電腦上的絕對路徑**（上傳端點回的），模型靠它用 Read 工具讀；
+ * 使用者看到的是縮圖或檔案卡，不是這串路徑。[mime] 決定畫縮圖還是畫檔案圖示。
  */
-data class Attachment(val name: String, val path: String, val bytes: Long)
+data class Attachment(
+    val name: String,
+    val path: String,
+    val bytes: Long,
+    val mime: String = "",
+) {
+    val isImage: Boolean get() = mime.startsWith("image/")
+}
 
 data class ChatState(
     val items: List<TraceItem> = emptyList(),
@@ -226,6 +294,15 @@ data class ChatState(
     /** 生成中的思考尾段，顯示在狀態列（流動的，會被下一步蓋掉）。 */
     val thinkingTail: String = "",
     val status: TurnStatus? = null,
+    /**
+     * 背景工作：還在跑的，加上還沒被收起來的完成紀錄。
+     *
+     * 跟 [TurnStatus.bg] 是同一份東西，但活得比一輪久：伺服器的狀態心跳隨回合
+     * 結束而停，而背景工作不會停。助理說完「等它完成」收工之後，畫面上那幾張卡片
+     * 得靠這個欄位留著——不然指示會跟著回合一起消失，看起來像什麼事都沒在發生。
+     * 伺服器用 `bg.state` 事件維護它，使用者下次發言時把完成的收起來。
+     */
+    val bgTasks: List<BgTask> = emptyList(),
     val busy: Boolean = false,
     /**
      * 這段忙碌從什麼時候開始（epoch 毫秒，0＝不忙）。狀態列的秒數由它本地推算，
@@ -240,10 +317,9 @@ data class ChatState(
     /** 目前顯示的對話。 */
     val currentConv: String = "main",
     /**
-     * 這條對話的輸入框內容。
-     *
-     * 住在這裡而不是畫面的 `remember`：打一半切去別的分頁、或 App 被系統回收，
-     * `remember` 一律歸零，那段字就沒了。落地在 `Prefs.drafts`。
+     * 輸入框裡打到一半的字。放在這裡而不是畫面的 `remember`：那個活不過
+     * 切分頁，更活不過 App 被系統回收，打一半切出去回來就是空的。
+     * 由 ChatViewModel 以 conv_id 分流並寫進 Prefs。
      */
     val draft: String = "",
     /**
@@ -261,4 +337,52 @@ data class ChatState(
     val settings: dev.butlerkit.app.net.SettingsInfo? = null,
     /** 目前這條對話的伺服器狀態，切對話時重新拉。 */
     val convStatus: ConvStatus? = null,
+    /**
+     * 這條對話的歷史還在路上（snapshot 尚未回來、本地又一則都沒有）。
+     * 畫面拿它畫骨架，而不是先閃一下「還沒有對話」的空狀態再換成內容。
+     */
+    val historyLoading: Boolean = false,
+    /**
+     * 本地最早那則前面還有更早的歷史（snapshot 只帶最後一頁）。
+     * 畫面拿它決定要不要在最上面放「載入更早」那一列；舊伺服器沒這個概念，一律 false。
+     */
+    val hasMore: Boolean = false,
+    /** 正在往前翻一頁。那一列換成小型進度，且同時只跑一趟。 */
+    val olderLoading: Boolean = false,
 )
+
+// ── 工具軌跡的摺疊 ────────────────────────────────────────────────────────────
+//
+// 逐條列出每一次工具呼叫，好處是看得出「它到底在幹嘛」；壞處是量一大就把回覆
+// 整個埋掉——一輪十幾次工具的話，使用者要往上滑好幾頁才找得到助理真正說的話。
+//
+// 所以不是二選一，是看量：少的照舊逐條（那個好處留著），多的才收成一行帶
+// 「做了什麼」的摘要（不是只有數字），點一下展開。破壞性指令走 DangerTool，
+// 從來就不進這裡，不受影響。
+const val TOOL_FOLD_THRESHOLD = 5
+
+/**
+ * 一個階段的工具摘要，例如「讀 3 個檔・改 2 個檔・跑 7 個指令　+128 −40」。
+ *
+ * 刻意按 `kind` 分類講「做了什麼」而不是只報一個總數——只報數字的統計列
+ * 看得出規模、看不出在幹嘛，那正是逐條列存在的理由，摺疊不能把它弄丟。
+ */
+fun toolSummary(tools: List<dev.butlerkit.app.net.ToolCall>): String {
+    if (tools.isEmpty()) return ""
+    val n = tools.groupingBy { it.kind }.eachCount()
+    val parts = buildList {
+        n["read"]?.let { add("讀 $it 個檔") }
+        n["search"]?.let { add("搜尋 $it 次") }
+        n["edit"]?.let { add("改 $it 個檔") }
+        n["cmd"]?.let { add("跑 $it 個指令") }
+        n["web"]?.let { add("上網 $it 次") }
+        n["other"]?.let { add("其他 $it 次") }
+    }
+    val added = tools.sumOf { it.added }
+    val removed = tools.sumOf { it.removed }
+    val diff = when {
+        added == 0 && removed == 0 -> ""
+        else -> "　+$added −$removed"
+    }
+    return parts.joinToString("・") + diff
+}

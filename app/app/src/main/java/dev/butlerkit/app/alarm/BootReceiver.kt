@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import dev.butlerkit.app.data.ApkUpdate
+import dev.butlerkit.app.data.InboxRepo
 import dev.butlerkit.app.data.Prefs
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.parseAgenda
@@ -24,9 +25,16 @@ class BootReceiver : BroadcastReceiver() {
             intent.action != Intent.ACTION_MY_PACKAGE_REPLACED
         ) return
         // 剛被更新過：暫存區那支安裝檔已經沒有用了（系統早就把程式複製進 /data/app），
-        // 留著就是白佔幾十 MB。**只在更新後清，開機時不清**——開機時如果有下載好
+        // 留著就是白佔四十幾 MB。**只在更新後清，開機時不清**——開機時如果有下載好
         // 但還沒裝的更新，清掉等於要他再抓一次
-        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) ApkUpdate.clear(ctx)
+        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+            // 這是「那次安裝到底成功了沒」的唯一答案。安裝畫面是系統的，按下去
+            // 之後 App 收不到任何回呼，少了這一句，卡片上的按鈕會從「安裝這個更新」
+            // 直接退回「存到手機」——明明剛裝好，看起來卻像沒發生過。
+            // **一定要排在 clear 前面**：它的第二個線索就是暫存區裡那支安裝檔
+            InboxRepo.markInstalled(ctx)
+            ApkUpdate.clear(ctx)
+        }
         // 排程 id 是上一世代的，開機後那些 PendingIntent 早就不存在了；
         // 清掉才不會讓 sync 去取消一堆不存在的東西
         Prefs(ctx).scheduledIds = emptySet()

@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -23,6 +24,7 @@ class Prefs(context: Context) {
     private val sp: SharedPreferences =
         context.getSharedPreferences("butler", Context.MODE_PRIVATE)
 
+    /** 伺服器位址。可以是 `主機:埠`，也可以是完整網址（`https://…`）。 */
     var host: String
         get() = sp.getString(KEY_HOST, DEFAULT_HOST) ?: DEFAULT_HOST
         set(v) = sp.edit().putString(KEY_HOST, v).apply()
@@ -146,10 +148,45 @@ class Prefs(context: Context) {
             .apply()
 
     /**
-     * 每條對話沒送出的輸入框內容，`conv_id` → 草稿。
+     * 剛剛送去給系統安裝、還不知道結果的那個 APK（file_id），沒有就是空字串。
      *
-     * 打一半切去別的分頁、或 App 被系統回收，Compose 的 `remember` 一律歸零，
-     * 那段字就沒了。跟 [savedFiles] 同一套做法序列化成 JSON。
+     * 安裝這件事沒有回呼：Intent 送出去之後畫面就交給系統的套件安裝器了，
+     * 使用者可能裝、也可能按取消，App 這邊完全收不到消息。唯一的確認來自
+     * 更新成功後系統發的 MY_PACKAGE_REPLACED——但那則廣播只說「我被換掉了」，
+     * 不說是被哪個檔案換掉的。所以要先把 id 記在這裡，等廣播來了才對得起來。
+     */
+    var pendingInstall: String
+        get() = sp.getString(KEY_PENDING_INSTALL, "") ?: ""
+        set(v) = sp.edit().putString(KEY_PENDING_INSTALL, v).apply()
+
+    /**
+     * 已經裝起來的 APK（file_id），舊到新。
+     *
+     * 卡片上那顆按鈕裝完之後要變成「已更新」而不是退回「存到手機」。做不到的話
+     * 畫面看起來就像什麼都沒發生過，而 APK 又不像一般檔案存在「下載」資料夾裡
+     * 可以自己去確認——安裝檔裝完就被清掉了（見 [ApkUpdate]），沒有任何痕跡。
+     *
+     * 不比對 versionCode 而是記 id：這支 App 的 versionCode 是寫死的，
+     * 每一版都一樣，拿來比等於沒比。
+     *
+     * 存 JSON List 不存 StringSet：滿了要丟最舊的那筆，而 StringSet 無序。
+     */
+    var installedApks: List<String>
+        get() = runCatching {
+            Json.decodeFromString(ID_LIST_SERIALIZER, sp.getString(KEY_INSTALLED_APKS, "") ?: "")
+        }.getOrDefault(emptyList())
+        set(v) = sp.edit()
+            .putString(KEY_INSTALLED_APKS, Json.encodeToString(ID_LIST_SERIALIZER, v))
+            .apply()
+
+    /**
+     * 打到一半還沒送出的訊息：conv_id → 內容。
+     *
+     * 輸入框的內容原本只是畫面上的一個 `remember`，離開分頁就沒了，App 被系統
+     * 回收更是連影子都不剩——打了一段長訊息、中途切出去查個東西，回來是空的。
+     * 每條對話各存一份：草稿是講給那條對話聽的，切過去又切回來要看到原本那句。
+     *
+     * 跟 [savedFiles] 同樣的理由用 JSON 塞一個 String：要的是成對的鍵值。
      */
     var drafts: Map<String, String>
         get() = runCatching {
@@ -173,7 +210,19 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_TALK_THEIRS, "") ?: ""
         set(v) = sp.edit().putString(KEY_TALK_THEIRS, v).apply()
 
-    val baseUrl: String get() = "http://$host"
+    /**
+     * 請求的網址前綴。
+     *
+     * [host] 自己帶了 scheme 就照用，沒帶的才補 `http://`——`主機:埠` 這種寫法
+     * 是區網或 tailnet 直連，沒有憑證也沒有 https；走 Cloudflare Tunnel 之類的
+     * 通道則是完整的 `https://…`。兩種都要能填，設定頁那一欄是同一個。
+     */
+    val baseUrl: String
+        get() = if (host.startsWith("http://") || host.startsWith("https://")) {
+            host.trimEnd('/')
+        } else {
+            "http://$host"
+        }
 
     fun isConfigured(): Boolean = host.isNotBlank() && token.isNotBlank()
 
@@ -189,15 +238,20 @@ class Prefs(context: Context) {
         private const val KEY_SCHEDULED = "scheduled_ids"
         private const val KEY_SAVED_FILES = "saved_files"
         private const val KEY_DRAFTS = "drafts"
+        private const val KEY_PENDING_INSTALL = "pending_install"
+        private const val KEY_INSTALLED_APKS = "installed_apks"
 
         /** [savedFiles] 與 [drafts] 共用的 JSON serializer。 */
         private val SAVED_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
+
+        /** [installedApks] 的 JSON serializer。 */
+        private val ID_LIST_SERIALIZER = ListSerializer(String.serializer())
         private const val KEY_BUSY_SINCE = "busy_since"
         private const val KEY_TALK_MINE = "talk_mine"
         private const val KEY_TALK_THEIRS = "talk_theirs"
 
         /**
-         * 伺服器位址，格式 `主機:埠`。
+         * 伺服器位址，格式 `主機:埠`，或完整網址（`https://…`）。
          *
          * 刻意留空——填一個猜的位址進去，連不上的時候症狀是「一直轉圈」，
          * 而那跟防火牆擋掉長得一模一樣，新手會往錯的方向查。空的至少會直接
@@ -207,8 +261,9 @@ class Prefs(context: Context) {
          * 而不是 IP：位址會變，名字不會，而 network_security_config 的白名單
          * 是編譯期資源，改一次就要重編一次 APK。
          *
-         * 走 Cloudflare Tunnel 之類的通道就填那個 https 網址（`butler.example.com`，
-         * 443 可省略）。那條路不碰明文白名單，什麼都不必改。
+         * 走 Cloudflare Tunnel 之類的通道就填那個 https 網址
+         * （`https://butler.example.com`，443 可省略）。那條路不碰明文白名單，
+         * 什麼都不必改。
          */
         const val DEFAULT_HOST = ""
     }
