@@ -252,4 +252,38 @@ class TrailReducerTest {
         val older = TrailReducer.fromHistory("c", listOf(HistoryMsg("user", "更早", atMs = 1_000L)))
         assertEquals(1_000L, TrailReducer.oldestAtMs(older + page))
     }
+
+    @Test
+    fun `插話與排隊要分得出來`() {
+        // steered 一直有送，不用的話插話與排隊的氣泡長得一模一樣
+        val t = run(
+            ev("user.message", """{"text":"插話","msg_id":"m1","queued":false,"steered":true}"""),
+            ev("user.message", """{"text":"排隊","msg_id":"m2","queued":true}"""),
+        )
+        val msgs = t.items.filterIsInstance<TraceItem.UserMsg>()
+        assertTrue(msgs[0].steered)
+        assertFalse(msgs[0].queued)
+        assertFalse(msgs[1].steered)
+        assertTrue(msgs[1].queued)
+    }
+
+    @Test
+    fun `附件是欄位不是本文`() {
+        val t = run(
+            ev(
+                "user.message",
+                """{"text":"看這張","msg_id":"m1","attachments":[{"name":"a.jpg",""" +
+                    """"path":"/up/a.jpg","bytes":"12","mime":"image/jpeg"}]}""",
+            ),
+        )
+        val m = t.items.filterIsInstance<TraceItem.UserMsg>().first()
+        assertEquals("看這張", m.text)          // 本文不含路徑
+        assertEquals(1, m.attachments.size)
+        assertEquals("a.jpg", m.attachments[0].name)
+        assertTrue(m.attachments[0].isImage)
+        assertEquals(12L, m.attachments[0].bytes)
+        // 沒有附件欄位就是空清單，不是 null
+        val none = run(ev("user.message", """{"text":"x","msg_id":"m2"}"""))
+        assertTrue(none.items.filterIsInstance<TraceItem.UserMsg>().first().attachments.isEmpty())
+    }
 }

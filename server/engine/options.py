@@ -172,6 +172,22 @@ _RULE_SOURCE = (
     "同一條對話裡這個標記會變，每次都看最新那則，不要用前面的印象當作他現在人在哪。"
 )
 
+# 10. 派子代理時要自己重述語言要求。
+#
+# **子代理讀不到這份 append。** 它拿的是 Claude Code 自己那份 system prompt，
+# SDK 的 `system_prompt` append 傳不下去，所以人格檔裡寫的語言、語氣、回報格式
+# 對子代理全部無效——它會用自己的預設語言回話，階段說明就混著兩種語言出現在
+# 同一個畫面上。這是平台限制，只能靠派工時在 prompt 裡明講一次。
+#
+# 刻意**不寫死是哪一種語言**：語言由人格檔決定（kit 附的是繁體中文，換掉就換了），
+# 這條只負責提醒「把你上面被要求的語言重述給子代理」。
+_RULE_SUBAGENT = (
+    "派子代理（Agent 工具）出去做事時，要在給它的 prompt 裡把語言要求重寫一遍，"
+    "講明回覆、階段說明與程式碼註解要用哪一種語言。"
+    "子代理讀不到你這份設定，不明講它就會用自己的預設語言回話，"
+    "兩種語言混在同一個畫面上很突兀。"
+)
+
 
 def _amnesia_rule() -> str:
     """失憶自救。沒設 BUTLER_NOTES_FILE 就整條不加。
@@ -202,7 +218,7 @@ def _amnesia_rule() -> str:
 # 助理對話：人格 + 全部核心規則。
 SYSTEM_APPEND = (
     persona.load(config.PERSONA) + _amnesia_rule() + _RULE_TIME + _RULE_SOURCE
-    + _RULE_AGENDA + _RULE_KANBAN + _RULE_SENDFILE + _RULE_WHERE
+    + _RULE_SUBAGENT + _RULE_AGENDA + _RULE_KANBAN + _RULE_SENDFILE + _RULE_WHERE
     + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
 )
 
@@ -217,7 +233,8 @@ SYSTEM_APPEND = (
 # 其餘一律交還給 Claude Code 的預設行為，這才是「純工作」該有的樣子。
 WORK_APPEND = (
     persona.load(config.WORK_PERSONA) + _RULE_TIME + _RULE_SOURCE
-    + _RULE_SENDFILE + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
+    + _RULE_SUBAGENT + _RULE_SENDFILE + _RULE_NO_RESTART
+    + _RULE_ASK_MARKER + _RULE_MARKERS
 )
 
 
