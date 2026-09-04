@@ -285,6 +285,18 @@ data class Attachment(
     val mime: String = "",
 ) {
     val isImage: Boolean get() = mime.startsWith("image/")
+
+    /**
+     * 伺服器上實際的檔名。**取檔一定要用這個，不能用 [name]。**
+     *
+     * `name` 是使用者看到的原始檔名（`Screenshot_1454.jpg`），而上傳端點會加一段
+     * 時戳前綴才落地（`20260904-145415-Screenshot_1454.jpg`）。拿 `name` 去打
+     * `/v1/uploads/{name}` 一律 404，畫面上就是每張圖都變成載入失敗的破圖標。
+     *
+     * 從 `path` 反推而不是多存一個欄位：`path` 兩條路都有（剛上傳完的回應、
+     * 歷史重建的事件），多一個欄位就多一個會忘記填的地方。
+     */
+    val stored: String get() = path.substringAfterLast('\\').substringAfterLast('/')
 }
 
 data class ChatState(

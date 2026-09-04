@@ -89,7 +89,7 @@ private fun Thumb(a: Attachment, client: ButlerClient, size: androidx.compose.ui
         val loaded = withContext(Dispatchers.IO) {
             runCatching {
                 val out = java.io.ByteArrayOutputStream()
-                client.downloadUpload(a.name, out).getOrThrow()
+                client.downloadUpload(a.stored, out).getOrThrow()
                 val bytes = out.toByteArray()
                 android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }.getOrNull()
@@ -224,7 +224,7 @@ private fun FullImage(a: Attachment, client: ButlerClient, onClose: () -> Unit) 
         val loaded = withContext(Dispatchers.IO) {
             runCatching {
                 val out = java.io.ByteArrayOutputStream()
-                client.downloadUpload(a.name, out).getOrThrow()
+                client.downloadUpload(a.stored, out).getOrThrow()
                 val bytes = out.toByteArray()
                 android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }.getOrNull()

@@ -76,4 +76,29 @@ class ChatModelsTest {
         assertFalse(small.size > TOOL_FOLD_THRESHOLD)
         assertTrue(big.size > TOOL_FOLD_THRESHOLD)
     }
+    @Test
+    fun `取檔用伺服器上的檔名，顯示用原始檔名`() {
+        // 上傳端點會加時戳前綴才落地。先前縮圖拿 name 去打 /v1/uploads/{name}，
+        // 一律 404，畫面上每張圖都變成載入失敗的破圖標。
+        val a = Attachment(
+            name = "Screenshot_1454.jpg",
+            path = "/up/20260904-145415-Screenshot_1454.jpg",
+            bytes = 12L, mime = "image/jpeg",
+        )
+        assertEquals("20260904-145415-Screenshot_1454.jpg", a.stored)
+        assertEquals("Screenshot_1454.jpg", a.name)
+        assertTrue(a.isImage)
+    }
+
+    @Test
+    fun `Windows 路徑也取得出檔名`() {
+        // 伺服器實際回的就是 C:\...\uploads\xxx 這種
+        val sep = Char(92)
+        val win = Attachment(
+            name = "a.jpg",
+            path = "C:" + sep + "data" + sep + "uploads" + sep + "20260904-a.jpg",
+            bytes = 1L, mime = "image/jpeg",
+        )
+        assertEquals("20260904-a.jpg", win.stored)
+    }
 }
