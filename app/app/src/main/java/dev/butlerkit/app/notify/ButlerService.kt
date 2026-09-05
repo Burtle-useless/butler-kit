@@ -23,8 +23,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 背景保活：App 不在前景時，由這個前景服務持有 SSE 連線並發通知。
@@ -208,6 +210,8 @@ class ButlerService : Service() {
 
         while (scope.isActive) {
             runCatching {
+              // 網路換了就掐掉這條連線立刻重連，別等 45 秒 readTimeout（見 NetMonitor）
+              dev.butlerkit.app.net.NetMonitor.guard(ButlerClient.TAG) {
                 // 走 bgSeq 而不是 lastSeq。這條連線只發通知、不存任何內容，
                 // 共用畫面那個游標會把它推過頭，使用者點通知回到前景時，
                 // 伺服器判定「都收過了」而不重播，ViewModel 手上卻一則都沒有——
@@ -282,9 +286,11 @@ class ButlerService : Service() {
                         }
                     }
                 }
+              }
             }
             if (!scope.isActive) break
-            delay(backoff)
+            // 退避可以被網路訊號打斷：恢復訊號的那一刻就重連，別把秒數睡完
+            withTimeoutOrNull(backoff) { dev.butlerkit.app.net.NetMonitor.signals.first() }
             backoff = (backoff * 2).coerceAtMost(30_000L)
         }
     }

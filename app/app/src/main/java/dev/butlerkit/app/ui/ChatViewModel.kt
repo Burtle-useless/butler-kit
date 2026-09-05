@@ -14,6 +14,7 @@ import dev.butlerkit.app.net.BgTask
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.ConvInfo
 import dev.butlerkit.app.net.Locator
+import dev.butlerkit.app.net.NetMonitor
 import dev.butlerkit.app.net.ServerEvent
 import dev.butlerkit.app.net.SettingsInfo
 import dev.butlerkit.app.net.ToolCall
@@ -31,10 +32,12 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
@@ -153,8 +156,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 重連退避。放成員而不是區域變數：重置點在 collectStream（連上那一刻）。 */
+    private var backoffMs = 1_000L
+
     private suspend fun streamForever() = coroutineScope {
-        var backoffMs = 1_000L
+        backoffMs = 1_000L
         Log.i(ButlerClient.TAG, "connectLoop 啟動 host=${prefs.host} lastSeq=${prefs.lastSeq}")
         while (isActive) {
             runCatching {
@@ -174,37 +180,47 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 所以只有這個 process 的第一次要跳過。
                 val since = if (coldStart) -1L else prefs.lastSeq
                 coldStart = false
-                client.stream(since).collect { wire ->
-                    when (wire) {
-                        is Wire.Conn -> {
-                            if (wire.connected) {
-                                backoffMs = 1_000L
-                                refreshConversations()
-                                // 模型清單也重拉：伺服器重啟後第一次連線前它只有內建的
-                                // 後備清單，本地那份是開 App 時抓的，不重拉就一直少模型
-                                // （2026-09-03 使用者回報面板少了 Fable）
-                                loadSettings()
-                                // 每次（重）連上都校正一次：斷線期間可能有回合跑完，
-                                // 也可能還在跑，本地 busy 一定是錯的
-                                loadSnapshot(_state.value.currentConv)
-                            }
-                            _state.update {
-                                it.copy(
-                                    connected = wire.connected,
-                                    connError = wire.error,
-                                    pet = if (wire.connected) PetMood.Idle else PetMood.Offline,
-                                )
-                            }
-                        }
-                        is Wire.Ev -> onEvent(wire.event)
-                    }
-                }
+                streamOnCurrentNet(since)
             }
             if (!isActive) break
             _state.update { it.copy(connected = false, pet = PetMood.Offline) }
-            Log.w(ButlerClient.TAG, "連線中斷，${backoffMs}ms 後重試")
-            delay(backoffMs)
+            Log.w(ButlerClient.TAG, "連線中斷，${backoffMs}ms 後重試（網路一恢復就提早）")
+            // 退避等待可以被網路訊號打斷：出電梯、切回 Wi-Fi 的那一刻就該重連，
+            // 不是把剩下的秒數睡完（2026-09-05 使用者：「斷線重連做得很差」）
+            withTimeoutOrNull(backoffMs) { NetMonitor.signals.first() }
             backoffMs = (backoffMs * 2).coerceAtMost(15_000L)
+        }
+    }
+
+    /** 連一次 SSE，網路換了就掐掉讓外層立刻重連（見 NetMonitor.guard）。 */
+    private suspend fun streamOnCurrentNet(since: Long) =
+        NetMonitor.guard(ButlerClient.TAG) { collectStream(since) }
+
+    private suspend fun collectStream(since: Long) {
+        client.stream(since).collect { wire ->
+            when (wire) {
+                is Wire.Conn -> {
+                    if (wire.connected) {
+                        backoffMs = 1_000L
+                        refreshConversations()
+                        // 模型清單也重拉：伺服器重啟後第一次連線前它只有內建的
+                        // 後備清單，本地那份是開 App 時抓的，不重拉就一直少模型
+                        // （2026-09-03 使用者回報面板少了 Fable）
+                        loadSettings()
+                        // 每次（重）連上都校正一次：斷線期間可能有回合跑完，
+                        // 也可能還在跑，本地 busy 一定是錯的
+                        loadSnapshot(_state.value.currentConv)
+                    }
+                    _state.update {
+                        it.copy(
+                            connected = wire.connected,
+                            connError = wire.error,
+                            pet = if (wire.connected) PetMood.Idle else PetMood.Offline,
+                        )
+                    }
+                }
+                is Wire.Ev -> onEvent(wire.event)
+            }
         }
     }
 
@@ -407,13 +423,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshConversations() = viewModelScope.launch {
         client.listConversations().onSuccess { list ->
             _state.update { it.copy(conversations = list) }
-            // 工作區分頁在清單還沒到就被點開時會停在「還沒有對話」（enterCcTab 提前
+            // 玖分頁在清單還沒到就被點開時會停在「還沒有對話」（enterCcTab 提前
             // return，而 MainActivity 只在換分頁時再叫它）。清單到了就補切一次
             if (wantCc) enterCcTab()
         }
     }
 
-    /** 工作區分頁點開時清單還沒載到，等清單到了要補切過去。 */
+    /** 玖分頁點開時清單還沒載到，等清單到了要補切過去。 */
     private var wantCc = false
 
     /**
@@ -783,6 +799,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
         }.getOrNull() ?: uri.lastPathSegment
     }
+
 
     // ── 訊息 ─────────────────────────────────────────────────────────────
     fun send(text: String) {

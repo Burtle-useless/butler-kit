@@ -23,6 +23,9 @@ class ButlerApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Notifier.ensureChannels(this)
+        // 網路變化的即時訊號：兩條連線迴圈（ViewModel／ButlerService）都靠它
+        // 在網路恢復的當下立刻重連，而不是傻等退避與 readTimeout
+        dev.butlerkit.app.net.NetMonitor.start(this)
         // widget 的兩條更新路線。放 Application 而不是 MainActivity：widget 貼在桌面上
         // 不代表使用者會打開 App，掛在 Activity 上的話重開機後可能好幾天都沒排到。
         // 兩支都是冪等的（unique work 用 KEEP、alarm 用同一個 requestCode 覆蓋）
