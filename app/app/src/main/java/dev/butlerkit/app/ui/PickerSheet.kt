@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -38,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -161,7 +163,8 @@ private fun ShotCell(s: Shot, onClick: () -> Unit) {
         bmp?.let {
             Image(
                 bitmap = it, contentDescription = null,
-                modifier = Modifier.fillMaxWidth(), contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
             )
         }
     }
@@ -197,15 +200,35 @@ private fun recentPhotos(ctx: Context): List<Shot> = runCatching {
     out
 }.getOrDefault(emptyList())
 
-/** 縮圖。Android 10 起有 loadThumbnail，舊版退回自己 decode 並降取樣。 */
+/**
+ * 縮圖。Android 10 起有 loadThumbnail，舊版退回自己 decode 並降取樣。
+ *
+ * 跟系統要 512px 而不是 256：三欄格子在 1440 寬的螢幕上一格就是 480px，
+ * 256 的縮圖等於放大快兩倍畫，整片格子都是糊的（2026-09-05 使用者截圖回報
+ * 「解析度也太低」——說的就是這個面板）。512 對高密度螢幕剛好貼齊，
+ * MediaStore 的縮圖有系統快取，成本差不了多少。
+ */
 private fun loadThumb(ctx: Context, s: Shot): ImageBitmap? = runCatching {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        ctx.contentResolver.loadThumbnail(s.uri, android.util.Size(256, 256), null)
+        ctx.contentResolver.loadThumbnail(s.uri, android.util.Size(512, 512), null)
             .asImageBitmap()
     } else {
         ctx.contentResolver.openInputStream(s.uri)?.use { input ->
-            val o = android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }
-            android.graphics.BitmapFactory.decodeStream(input, null, o)?.asImageBitmap()
+            // 舊路寫死 inSampleSize=8 對手機截圖（1440 寬）等於縮到 180px，更糊。
+            // 先探尺寸再算，讓短邊落在 512～1024 之間
+            val probe = android.graphics.BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            android.graphics.BitmapFactory.decodeStream(input, null, probe)
+            var sample = 1
+            val shorter = minOf(probe.outWidth, probe.outHeight)
+            while (shorter / (sample * 2) >= 512) sample *= 2
+            ctx.contentResolver.openInputStream(s.uri)?.use { again ->
+                val o = android.graphics.BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                }
+                android.graphics.BitmapFactory.decodeStream(again, null, o)?.asImageBitmap()
+            }
         }
     }
 }.getOrNull()
