@@ -81,14 +81,30 @@ object TrailReducer {
         }
 
         when (ev.type) {
-            "user.message" -> append(
-                TraceItem.UserMsg(
-                    ev.turnId, ev.str("text"),
-                    msgId = ev.str("msg_id"), queued = ev.bool("queued"),
-                    steered = ev.bool("steered"),
-                    atMs = ev.atMs, attachments = ev.attachments(),
-                ),
-            )
+            "user.message" -> {
+                // 任何一則使用者訊息都解掉還掛著的 [[ASK:]] 提問——那種提問的規約
+                // 就是「下一則輸入當答案」，點按鈕與直接打字都算。先前只有點按鈕
+                // 會標已答，打字回覆的話「等你回答」那條 bar 永遠釘著不消失
+                // （2026-09-05 使用者截圖回報）。answeredText 收訊息原文，卡片上
+                // 看得到當初是用哪句話回的。伺服器停著在等的那種（isInline=false）
+                // 不在此列——那要走正式的回填，有自己的 resolve 事件。
+                val said = ev.str("text")
+                n = n.copy(items = n.items.map { item ->
+                    if (item is TraceItem.AskItem && item.pending && item.req.isInline) {
+                        item.copy(answeredText = said.ifBlank { "（已回覆）" })
+                    } else {
+                        item
+                    }
+                })
+                append(
+                    TraceItem.UserMsg(
+                        ev.turnId, said,
+                        msgId = ev.str("msg_id"), queued = ev.bool("queued"),
+                        steered = ev.bool("steered"),
+                        atMs = ev.atMs, attachments = ev.attachments(),
+                    ),
+                )
+            }
 
             // 排著的訊息被讀進這一輪（taken）或隨停止一起取消（dropped）。
             // 只改那幾則的標記，不動內容。
@@ -299,7 +315,18 @@ object TrailReducer {
         messages.forEach { m ->
             drainCardsBefore(m.atMs)
             when (m.role) {
-                "user" -> out += TraceItem.UserMsg(convId, m.text, atMs = m.atMs)
+                "user" -> {
+                    // [[ASK:]] 的規約是「下一則輸入當答案」，重建時同樣結案——
+                    // 不做的話每次重開 App，歷史裡所有問過的題全部變回「等你回答」，
+                    // 那條 bar 就永遠釘在輸入框上（2026-09-05 使用者截圖回報）。
+                    for (i in out.indices) {
+                        val it = out[i]
+                        if (it is TraceItem.AskItem && it.pending && it.req.isInline) {
+                            out[i] = it.copy(answeredText = m.text.ifBlank { "（已回覆）" })
+                        }
+                    }
+                    out += TraceItem.UserMsg(convId, m.text, atMs = m.atMs)
+                }
                 "system" -> out += TraceItem.WakeNote(convId, m.text, m.atMs)
                 else -> {
                     m.think.takeIf { it.isNotBlank() }

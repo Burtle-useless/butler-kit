@@ -255,7 +255,7 @@ class TrailReducerTest {
 
     @Test
     fun `插話與排隊要分得出來`() {
-        // steered 一直有送，不用的話插話與排隊的氣泡長得一模一樣
+        // 2026-09-04：steered 一直有送，App 整個沒用，插話與排隊的氣泡長得一樣
         val t = run(
             ev("user.message", """{"text":"插話","msg_id":"m1","queued":false,"steered":true}"""),
             ev("user.message", """{"text":"排隊","msg_id":"m2","queued":true}"""),
@@ -285,5 +285,31 @@ class TrailReducerTest {
         // 沒有附件欄位就是空清單，不是 null
         val none = run(ev("user.message", """{"text":"x","msg_id":"m2"}"""))
         assertTrue(none.items.filterIsInstance<TraceItem.UserMsg>().first().attachments.isEmpty())
+    }
+
+    @Test
+    fun `打字回覆也解掉掛著的 inline 提問`() {
+        // 2026-09-05：[[ASK:]] 的規約是「下一則輸入當答案」，但先前只有點按鈕會
+        // 標已答——直接打字的話「等你回答」那條 bar 永遠釘著不消失
+        val t = run(
+            ev("reply.final", """{"markdown":"要選哪個？","ask":{"title":"怎麼做",
+                "choices":[{"id":"A","label":"A"},{"id":"B","label":"B"}]}}"""),
+            ev("user.message", """{"text":"用第三種做法","msg_id":"m1"}"""),
+        )
+        val ask = t.items.filterIsInstance<TraceItem.AskItem>().single()
+        assertTrue(!ask.pending)
+        assertEquals("用第三種做法", ask.answeredText)
+    }
+
+    @Test
+    fun `伺服器停著在等的提問不被打字解掉`() {
+        // 那種要走正式回填（有自己的 resolve 事件），亂標會讓確認框看起來已處理
+        val t = run(
+            ev("ask.request", """{"ask_id":"srv-1","kind":"confirm","title":"要刪嗎",
+                "body":"","raw":"rm -rf x","choices":[]}"""),
+            ev("user.message", """{"text":"等等","msg_id":"m1"}"""),
+        )
+        val ask = t.items.filterIsInstance<TraceItem.AskItem>().single()
+        assertTrue(ask.pending)
     }
 }
