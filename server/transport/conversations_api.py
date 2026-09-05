@@ -101,7 +101,7 @@ async def stop_bg_task(
 ) -> dict:
     """停掉一件還在跑的背景工作。
 
-    先前要停只能開口叫助理去停，而助理可能正忙著別的回合，一句話得排隊等好幾分鐘
+    先前要停只能開口叫柒去停，而柒可能正忙著別的回合，一句話得排隊等好幾分鐘
     ——這對「我不想讓它再跑下去」這種需求太慢了。SDK 一直有 `stop_task()`，
     只是沒人接。
 
@@ -227,7 +227,13 @@ async def set_conv_settings(conv_id: str, payload: dict = Body(...),
             raise HTTPException(status_code=400, detail=f"unknown effort: {effort}")
         st.effort = effort or None
     state_mod.persist(st)
-    await client_pool.drop(conv_id)   # 指紋失效，下回合重建並 resume 接回
+    # 回合在跑時**不准 drop**：drop 會殺掉 CLI 進程，而回合的讀取端掛在收件匣上
+    # 等訊息——進程死了、pump 被取消，那個等待永遠不會醒，整條對話就掛在
+    # 「想一下」直到閒置逾時或使用者按停止（2026-09-05 回合中換模型實際發生）。
+    # 跑完這一輪再換就好：指紋（client_sig 含生效 model/effort）在下回合
+    # acquire 時不符，自動重建並 resume 接回，跟帳號預設層同一條路。
+    if not core.worker.is_running(conv_id):
+        await client_pool.drop(conv_id)   # 閒置：立即重建，下回合直接用新設定
     return {
         "model": eff_model(st), "effort": eff_effort(st),
         "model_override": st.model or "", "effort_override": st.effort or "",
@@ -244,7 +250,10 @@ async def set_cwd(conv_id: str, payload: dict = Body(...),
     st = get_state(conv_id)
     st.cwd = p
     state_mod.persist(st)
-    await client_pool.drop(conv_id)   # cwd 變了，client 指紋失效，下回合重建
+    # 同 set_conv_settings：回合在跑時 drop 會把進行中的回合弄成殭屍，
+    # cwd 也在指紋裡，留給下回合 acquire 自動重建。
+    if not core.worker.is_running(conv_id):
+        await client_pool.drop(conv_id)
     return {"cwd": str(p)}
 
 

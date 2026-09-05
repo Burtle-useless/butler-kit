@@ -25,12 +25,20 @@ OFFICIAL = [
      "displayName": "Default (recommended)",
      "description": "Opus 5 with 1M context", "supportsEffort": True,
      "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "claude-fable-5[1m]", "resolvedModel": "claude-fable-5",
+     "displayName": "Fable", "description": "Fable 5", "supportsEffort": True,
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
     {"value": "sonnet", "resolvedModel": "claude-sonnet-5", "displayName": "Sonnet",
      "description": "Sonnet 5", "supportsEffort": True,
      "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
     {"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001", "displayName": "Haiku",
      "description": "Haiku 4.5"},
 ]
+
+# CLI 清單（2.1.259 為止）還沒收錄、由 _KNOWN_EXTRA 補的那顆
+EXTRA = "claude-fable-5-1[1m]"
+# 官方清單照舊 + 補充插在 Fable 正後面
+WITH_EXTRA = ["default", "claude-fable-5[1m]", EXTRA, "sonnet", "haiku"]
 
 
 class FakeClient:
@@ -57,9 +65,12 @@ async def main() -> int:
     print("\n[沒連過線：內建後備不是空的]")
     fresh()
     check("後備清單以別名為主、Fable 例外", models.values()[0] == "default" and
-          [v for v in models.values() if v.startswith("claude-")] == ["claude-fable-5[1m]"],
+          [v for v in models.values() if v.startswith("claude-")]
+          == ["claude-fable-5[1m]", EXTRA],
           str(models.values()))
     check("後備清單有 Fable", any(m.name == "Fable" for m in models.catalog()))
+    check("補充插在 Fable 正後面（後備）", models.values().index(EXTRA)
+          == models.values().index("claude-fable-5[1m]") + 1, str(models.values()))
     check("來源標成 fallback", models.source() == "fallback")
     check("claude- 開頭的舊值仍算合法", models.is_known("claude-opus-5"))
     check("亂打的值不合法", not models.is_known("gpt-9"))
@@ -69,7 +80,8 @@ async def main() -> int:
     client = FakeClient({"models": OFFICIAL, "commands": []})
     ok = await models.refresh_from(client)
     check("拿到了", ok)
-    check("清單換成官方的", models.values() == ["default", "sonnet", "haiku"], str(models.values()))
+    check("清單換成官方的＋補充插在 Fable 後", models.values() == WITH_EXTRA,
+          str(models.values()))
     check("顯示名帶過來", models.find("default").name == "Default (recommended)")
     check("解析成實際 id", models.resolve("default") == "claude-opus-5[1m]")
     check("完整 id 也找得到", models.find("claude-sonnet-5") is not None)
@@ -84,7 +96,7 @@ async def main() -> int:
     cache = json.loads((d / "models.json").read_text(encoding="utf-8"))
     models.reset_for_tests()
     models._load_cache()
-    check("快取讀回來", models.values() == ["default", "sonnet", "haiku"], str(models.values()))
+    check("快取讀回來", models.values() == WITH_EXTRA, str(models.values()))
     check("來源標成 cache", models.source() == "cache")
     check("快取記得時間", cache.get("fetched_at", 0) > time.time() - 60)
 
@@ -92,9 +104,21 @@ async def main() -> int:
     models._cat.fetched_at = 0.0
     ok3 = await models.refresh_from(FakeClient(None, fail=True))
     check("失敗不拋、回 False", ok3 is False)
-    check("清單沒被清掉", models.values() == ["default", "sonnet", "haiku"])
+    check("清單沒被清掉", models.values() == WITH_EXTRA)
     ok4 = await models.refresh_from(FakeClient({"models": []}))
-    check("空清單不覆蓋", ok4 is False and models.values() == ["default", "sonnet", "haiku"])
+    check("空清單不覆蓋", ok4 is False and models.values() == WITH_EXTRA)
+
+    print("\n[未來 CLI 收錄了 5.1：補充自動退場，不重複]")
+    fresh()
+    future = OFFICIAL[:2] + [
+        {"value": EXTRA, "resolvedModel": "claude-fable-5-1",
+         "displayName": "Fable 5.1", "description": "官方收錄版", "supportsEffort": True,
+         "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    ] + OFFICIAL[2:]
+    await models.refresh_from(FakeClient({"models": future, "commands": []}))
+    check("同一顆只出現一次", models.values().count(EXTRA) == 1, str(models.values()))
+    check("用的是官方那筆", models.find(EXTRA).description == "官方收錄版")
+    check("5.1 找得到、解析對", models.resolve(EXTRA) == "claude-fable-5-1")
 
     print(f"\n{'=' * 50}")
     if FAILED:

@@ -188,9 +188,18 @@ fun ChatScreen(
     // 帶到下一條對話——切過去之後新訊息不會自動跟，看起來像卡住了。
     // 跟 listState 同理要能存活過分頁切換，否則翻到一半切走再回來就恢復跟隨。
     var follow by rememberSaveable(state.currentConv) { mutableStateOf(true) }
+    // 手指正壓在列表上拖。拖曳中程式一次都不准捲——scrollToItem 會搶走捲動的
+    // mutex，把進行中的手勢硬生生打斷並瞬移到底。工作中 streaming 每幾十毫秒
+    // 就捲一次，手勢每次都被吃掉，體感就是「一直被往下拉、根本拉不上去」
+    // （follow 旗標擋不到這個：Drag.Start 到 follow=false 之間隔著一次 Flow
+    // 派送，拖曳的第一瞬間 follow 還是 true）。
+    var dragging by remember { mutableStateOf(false) }
     LaunchedEffect(listState) {
         listState.interactionSource.interactions.collect { i ->
-            if (i is DragInteraction.Start) follow = false
+            when (i) {
+                is DragInteraction.Start -> { dragging = true; follow = false }
+                is DragInteraction.Stop, is DragInteraction.Cancel -> dragging = false
+            }
         }
     }
     LaunchedEffect(listState) {
@@ -216,8 +225,11 @@ fun ChatScreen(
                 listState.scrollToItem(lastIndex, TO_ITEM_END)
                 landed = true
             }
-            !follow -> Unit
-            state.streaming.isNotEmpty() -> listState.scrollToItem(lastIndex, TO_ITEM_END)
+            !follow || dragging -> Unit
+            // 底部已經看得到就別捲：捲了沒位移，卻照樣搶一次 mutex——串流中
+            // 每個 delta 都搶，慣性滑動與拖曳就是被這個連環打斷的
+            state.streaming.isNotEmpty() ->
+                if (!atBottom) listState.scrollToItem(lastIndex, TO_ITEM_END)
             else -> listState.animateScrollToItem(lastIndex, TO_ITEM_END)
         }
     }
@@ -267,7 +279,7 @@ fun ChatScreen(
     // 一樣看 follow：正在讀舊訊息時點開鍵盤不該把人踢到最底下。
     val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
     LaunchedEffect(imeBottom) {
-        if (lastIndex >= 0 && follow) listState.scrollToItem(lastIndex, TO_ITEM_END)
+        if (lastIndex >= 0 && follow && !dragging) listState.scrollToItem(lastIndex, TO_ITEM_END)
     }
 
     // 回到底部：脫離跟隨之後的回程。先捲完再恢復跟隨——順序反過來的話，動畫
