@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  通知列小圖示。系統會把它整片染成單色，所以只能用實心剪影、不能靠顏色區分，
+  細節多了會糊成一團。**佔位用的一顆點**，換吉祥物時跟 launcher 圖示一起換。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,12 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 z" />
+</vector>

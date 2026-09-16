@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 能對外開放的路徑白名單。
+
+    只開 cacheDir/updates 這一層，也只有更新用的 APK 放在那裡。
+    路徑名要跟 ApkUpdate.DIR 一致，寫錯的話 getUriForFile 會拋
+    IllegalArgumentException（"Failed to find configured root"）。
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

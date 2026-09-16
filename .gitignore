@@ -1,0 +1,41 @@
+# ── 絕對不能進版控：這裡面是使用者的資料與憑證 ────────────────────────────────
+server/data/
+*.log
+
+# 給特定對象的臨時說明，不是 kit 的一部分
+_對外文件/
+
+# 同步用的臨時腳本（比對本體與 kit、逐檔跑測試）。只擋根目錄這一層，
+# server/_diag_*.py 是 kit 的一部分要留著。裡面寫著上游 repo 的絕對路徑，
+# 進版控等於把那條路徑公開出去
+/_*.py
+
+# ── Android ──────────────────────────────────────────────────────────────────
+app/local.properties
+app/.gradle/
+app/.kotlin/
+app/build/
+app/app/build/
+.idea/
+*.iml
+# 簽章金鑰：外流等於別人可以發佈冒充你的 App 更新
+*.jks
+*.keystore
+keystore.properties
+
+# ── 建置產物 ─────────────────────────────────────────────────────────────────
+# 驗字腳本的輸出，跑一次覆蓋一次
+tools/verify_hanzi_out.txt
+*.apk
+*.aab
+dist/
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# impeccable hook 的本機快取：裡面是這台機器的絕對路徑
+.impeccable/

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  啟動圖示：**佔位用的一顆點**，跟 App 內 PetBot 的預設畫法一致。
+  換吉祥物的時候這裡要跟著換，不然桌面上的圖示會跟 App 裡的長得不一樣。
+
+  桌寵本體是 Compose Canvas 手繪，launcher 吃的是 VectorDrawable 的 pathData，
+  沒辦法直接沿用程式碼，同一個東西得在這裡重畫一次。
+
+  尺寸紀律（更早的版本栽過）：畫布 108x108，但只有**中央直徑 66 的圓**
+  是各家遮罩都保證看得到的範圍。這顆點直徑 40 置中，離安全邊界還很遠；
+  換成複雜圖形時記得把整個圖形塞進那個圓裡。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 一顆點，顏色同 Palette.PetDot -->
+    <path
+        android:pathData="M54,54 m-20,0 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0 z"
+        android:fillColor="#3A3A3A" />
+</vector>

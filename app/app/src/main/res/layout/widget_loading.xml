@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Glance 把畫面準備好之前，系統先顯示這個。
+  只是一塊底色：這裡放文字的話，每次系統重建 widget 都會閃一下「載入中」。
+  顏色跟 WidgetUi 的 W.Bg 一樣，接手時看不出交界。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121826" />

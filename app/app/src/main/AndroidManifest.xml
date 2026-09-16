@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 挑檔面板要列最近的相片。給不給都能用：沒權限就只剩「其他檔案…」那條路
+         （見 ui/PickerSheet.kt），所以不在啟動時要，等使用者自己按 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 13+ 通知要執行期授權；沒有它助理在背景做完事你不會知道 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 前景服務：App 進背景後維持 SSE，否則系統會掐斷連線 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- specialUse 而不是 dataSync：targetSdk 35 起，dataSync 型的前景服務
+         一天只能累計跑 6 小時，滿了系統呼叫 onTimeout()，之後連 startForegroundService
+         都會被拒（ForegroundServiceStartNotAllowedException）。助理的背景連線是
+         「整天都要在」的東西，那個額度等於每天下半天就失聯。specialUse 沒有時間上限，
+         代價是上 Google Play 要向 Google 說明用途——助理是側載的，不上架。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 電池最佳化白名單的請求入口（Doze 會延遲甚至凍結背景連線） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- 定位：服務跑著的時候每 15 分鐘回報一次目前位置，助理也可以隨時問當下位置。
+         電腦端只保留最新一筆，不存軌跡（見 server 的 engine/location.py）。
+         COARSE 也宣告是因為使用者可以在授權對話框選「大概位置」——
+         只給區級精度仍然回答得了「附近有什麼」，不該因此整個功能不能用。
+         刻意**不要** ACCESS_BACKGROUND_LOCATION：那是給「沒有前景服務時也要在背景抓」
+         用的，需要使用者去系統設定裡手動選「一律允許」。助理的背景連線本來就掛著一個
+         前景服務，把它加上 location 型別就取得了同樣的能力，不必多要一個權限。
+         **代價是定期回報只能跑在那個服務的生命週期裡**——搬去 WorkManager 就失去
+         這個豁免，得回頭要那個權限。 -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- 鬧鐘 -->
+    <!-- USE_EXACT_ALARM 是 Android 13+ 給「核心功能就是鬧鐘」的 app 用的，安裝即生效、
+         不必請使用者去設定裡開。SCHEDULE_EXACT_ALARM 則是 12/12L 的舊路。
+         少了它們 setAlarmClock 會被降級成不精準排程——鬧鐘晚十分鐘響等於沒響。 -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <!-- 鎖屏時把響鈴畫面直接拉起來 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- 響鈴服務要播聲音 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 重開機後把鬧鐘排回去 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 面對面翻譯要聽麥克風 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 更新自己。這個 App 不上架，新版只能側載，而「下載完自己去檔案管理器找」
+         中間有三步都在 App 外面。有了它就能在下載完直接把系統的安裝畫面叫出來。
+         宣告了不代表能裝——使用者還要在設定裡對這個 App 開一次「允許安裝未知應用程式」，
+         那是一次性的，程式端用 canRequestPackageInstalls() 判斷並引導。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Android 11 起的 package visibility：沒有這兩個 queries，
+         SpeechRecognizer.isRecognitionAvailable() 與 TextToSpeech 都會找不到系統服務，
+         而且是**靜默**失敗（回 false／init 失敗），不會有任何錯誤訊息。 -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".ButlerApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.Butler">
+
+        <!-- windowSoftInputMode 的 stateAlwaysHidden：進 App 一律不彈鍵盤。
+             程式碼裡沒有任何 requestFocus，自動彈是系統在 Activity 重建時
+             還原了輸入框的焦點狀態。這個旗標不影響使用者主動點輸入框開鍵盤。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".notify.ButlerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse|location">
+            <!-- 這裡宣告的是「可能會用到的型別集合」，實際傳給 startForeground 的
+                 是子集，由 ButlerService 依當下有沒有定位權限決定——**沒權限時
+                 帶上 location 會拋 SecurityException 讓服務整個起不來**，
+                 那等於為了定位把推播一起弄壞。 -->
+            <!-- specialUse 一定要附這個 property 說明用途，缺了它服務起不來 -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="持續訂閱使用者自己電腦上的事件流，把工作結果與提問即時推到手機" />
+        </service>
+
+        <!-- ── 鬧鐘 ────────────────────────────────────────────────────
+             響鈴畫面獨立成一個 Activity 而不是 MainActivity 的一個畫面：
+             它要能蓋在鎖屏上、要能自己點亮螢幕，這些是 Activity 層級的屬性。
+             excludeFromRecents：關掉之後不要留在最近使用清單裡當殭屍。 -->
+        <activity
+            android:name=".alarm.RingActivity"
+            android:exported="false"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=".alarm"
+            android:theme="@style/Theme.Butler" />
+
+        <!-- ── 面對面翻譯 ──────────────────────────────────────────────
+             獨立 Activity 而不是第六個底部分頁：底欄五個字已經滿了，而這個畫面要
+             全螢幕、要大字、要壓著螢幕不休眠，那些是 Activity 層級的事。
+             跟 RingActivity 同一個理由。 -->
+        <activity
+            android:name=".voice.TalkActivity"
+            android:exported="false"
+            android:label="面對面翻譯"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.Butler" />
+
+        <service
+            android:name=".alarm.RingService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <receiver
+            android:name=".alarm.AlarmReceiver"
+            android:exported="false" />
+
+        <!-- 子通知被滑掉時重算群組摘要。只由自己設的 deleteIntent 觸發。 -->
+        <receiver
+            android:name=".notify.NotifyDismissReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".alarm.BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- 更新 App 也會清掉排程，一併補回來 -->
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ── 桌面 widget ─────────────────────────────────────────────
+             三張各自獨立而不是一張切分頁：桌面上的東西要能單獨擺、單獨調大小，
+             使用者可能只想要課表那張。
+             課表與今日行程讀 Prefs 的 agenda 快取，用量讀 usage 快取，
+             三張都不連網——widget 只有幾秒可以出畫面，來不及等 HTTP。 -->
+        <receiver
+            android:name=".widget.CourseWidgetReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/course_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.TodayWidgetReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/today_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.UsageWidgetReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/usage_widget_info" />
+        </receiver>
+
+        <!-- 時間邊界到了就重畫（下一節課、下一個行程、跨日）。
+             沒有 intent-filter：只由自己排的 AlarmManager 叫醒，不對外開放。 -->
+        <receiver
+            android:name=".widget.WidgetTickReceiver"
+            android:exported="false" />
+
+        <!-- 更新用的 APK 存在 cacheDir，套件安裝器讀不到 App 的私有目錄，
+             要靠這個把檔案換成 content:// 再臨時授權（見 ApkUpdate.install）。
+             Android 7 起直接遞 file:// 給別的 App 會拋 FileUriExposedException。
+             grantUriPermissions 一定要開，否則授權旗標無效。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>
