@@ -57,7 +57,8 @@ import kotlinx.coroutines.launch
  * ——切過去只會看到別人的對話被端到工作頁上，而且送出的話會套到錯的人格。
  * 每加一個有自己分頁的對話，這裡就要跟著加一條。
  */
-internal fun isCcConv(id: String) = id != ChatViewModel.DEFAULT_CONV
+internal fun isCcConv(id: String) =
+    id != ChatViewModel.DEFAULT_CONV && !ChatViewModel.isCourseConv(id)
 
 /** 工作頁的對話清單。 */
 private fun ChatState.ccConversations() = conversations.filter { isCcConv(it.id) }

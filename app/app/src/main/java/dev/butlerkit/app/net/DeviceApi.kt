@@ -35,6 +35,7 @@ internal class DeviceApiImpl(core: ClientCore) : DeviceApi, ClientCore by core {
                 subject = it.optString("subject"),
                 latestCommit = it.optString("latest_commit"),
                 latestSubject = it.optString("latest_subject"),
+                courses = it.optBoolean("courses"),
             )
         }
 

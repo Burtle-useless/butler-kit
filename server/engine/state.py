@@ -81,13 +81,22 @@ def save_defaults(model: str | None, effort: str | None) -> None:
 
 
 def eff_model(state: ConvState) -> str:
-    """該對話實際生效的模型：對話覆寫 → 帳號預設 → 內建後備。"""
-    return state.model or default_model or config.DEFAULT_MODEL
+    """該對話實際生效的模型：profile 固定 → 對話覆寫 → 帳號預設 → 內建後備。
+
+    profile 固定排最前：「固定」的意思就是 App 上改帳號預設、或誰對這條對話
+    下了覆寫，都不該動到它。
+    """
+    # profiles 頂端 import 這裡的 ConvState，只能函式內 import
+    from . import profiles
+    fixed = profiles.resolve(state.conv_id).model
+    return fixed or state.model or default_model or config.DEFAULT_MODEL
 
 
 def eff_effort(state: ConvState) -> str | None:
-    """該對話實際生效的思考程度：對話覆寫 → 帳號預設（None＝SDK 預設）。"""
-    return state.effort or default_effort
+    """該對話實際生效的思考程度：profile 固定 → 對話覆寫 → 帳號預設（None＝SDK 預設）。"""
+    from . import profiles
+    fixed = profiles.resolve(state.conv_id).effort
+    return fixed or state.effort or default_effort
 
 
 # ── 兩份 JSON 的讀寫（session 對應與標題共用）──────────────────────────────────

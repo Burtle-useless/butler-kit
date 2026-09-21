@@ -212,7 +212,7 @@ private fun todayStr(): String {
  * 這三種校正，成本是一天 1440 次字串比較。
  */
 @Composable
-private fun rememberToday(): String {
+internal fun rememberToday(): String {
     var today by remember { mutableStateOf(todayStr()) }
     LaunchedEffect(Unit) {
         while (true) {

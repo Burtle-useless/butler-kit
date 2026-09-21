@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.butlerkit.app.data.AgendaRepo
+import dev.butlerkit.app.data.CoursesRepo
 import dev.butlerkit.app.data.InboxRepo
 import dev.butlerkit.app.data.Prefs
 import dev.butlerkit.app.net.AskRequest
@@ -85,7 +86,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // 這件事不能拿「本地有沒有內容」當代理指標。事件流是全裝置一條，背景對話
     // 跑起來時它的軌跡照樣寫進 itemsByConv——等使用者切過去，那條對話的本地
     // 內容早就不是空的，歷史於是永遠不補，畫面上只剩剛才收到的那幾則、往上滑
-    // 什麼都沒有。
+    // 什麼都沒有——症狀是「偶爾切過去就滑不動」。
     private val historyLoaded = mutableSetOf<String>()
 
     // 上一次成功拉到 snapshot 的時刻與它帶回的對話層狀態，每個對話一份。
@@ -117,13 +118,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // 回合進行中收到的檔案卡片先擱在這（記下當初掛在哪個對話），等**整則訊息**
     // 收工（turn.done）才落地。send_file 是回合中間的工具呼叫，卡片當場插進去會被
-    // 後面的回覆文字往上推，使用者得往回滑才看得到——預覽應該落在整段話
-    // 講完之後。
+    // 後面的回覆文字往上推，人得往回滑才看得到。預覽該出現在整段話講完之後。
     //
     // 「整則訊息」不是「一輪」：自動續跑與壓縮核對各會多跑一輪，每輪都有自己的
     // turn.end 與 reply.final。先前擱置條件看的是 busyByConv，而它被 turn.end 清，
     // 於是第一輪一結束就變閒置，之後那些輪傳來的卡片全部當場落地插在中間——
-    // 下載卡片就不會落在整則訊息的最底下。
+    // 否則下載卡片會停在回覆中間，而人在找它的時候是往最下面看。
     private val pendingOffers = mutableListOf<Pair<String, TraceItem.FileOffer>>()
 
     init {
@@ -134,6 +134,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 先把快取畫出來再去要新的：日常頁點開就有東西，不會空一秒
         AgendaRepo.loadCache(app)
         viewModelScope.launch { AgendaRepo.refresh(app, client) }
+        // 課程進度跟行事曆分開拉：來源是另一個 session 維護的檔，更新節奏不同
+        CoursesRepo.loadCache(app)
+        viewModelScope.launch { CoursesRepo.refresh(app, client) }
         viewModelScope.launch { InboxRepo.refresh(client) }
     }
 
@@ -172,7 +175,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 舊事件，snapshot 又同時帶回一份完整歷史，兩份在 loadSnapshot
                 // 裡接成 `history + live`。那行接法的前提是「live 比 history 新」，
                 // 這種情況下前提不成立，接出來就是同一段講兩次而且順序錯亂。
-                // 更新 App 之後會有訊息因此消失。
+                // 不補的話更新期間送出的訊息會整則不見。
                 //
                 // 冷啟動本來就不需要事件流補歷史——那是 snapshot 的職責，而且它
                 // 直接讀 CC 的逐字稿，是唯一的權威來源。續傳真正要救的是「切背景
@@ -186,7 +189,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(connected = false, pet = PetMood.Offline) }
             Log.w(ButlerClient.TAG, "連線中斷，${backoffMs}ms 後重試（網路一恢復就提早）")
             // 退避等待可以被網路訊號打斷：出電梯、切回 Wi-Fi 的那一刻就該重連，
-            // 不是把剩下的秒數睡完——網路都回來了還在乾等，重連就顯得很遲鈍
+            // 不是把剩下的秒數睡完——網路一回來就該重連，而不是等倒數走完
             withTimeoutOrNull(backoffMs) { NetMonitor.signals.first() }
             backoffMs = (backoffMs * 2).coerceAtMost(15_000L)
         }
@@ -205,7 +208,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         refreshConversations()
                         // 模型清單也重拉：伺服器重啟後第一次連線前它只有內建的
                         // 後備清單，本地那份是開 App 時抓的，不重拉就一直少模型
-                        // （症狀是面板上少了伺服器端剛加進去的那幾顆）
+                        // （沒有的話新出的模型不會出現在面板上）
                         loadSettings()
                         // 每次（重）連上都校正一次：斷線期間可能有回合跑完，
                         // 也可能還在跑，本地 busy 一定是錯的
@@ -275,7 +278,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             Effect.RefreshAgenda -> viewModelScope.launch {
                 AgendaRepo.refresh(getApplication(), client)
             }
-            // 助理要知道使用者人在哪。**完全靜默**：不進軌跡、不提示，抓完就回報。
+            // 助理要知道他人在哪。**完全靜默**：不進軌跡、不提示，抓完就回報。
             // 前景時是這裡在收，背景時是 ButlerService，兩邊共用 Locator 那一份實作。
             Effect.DeviceRequest -> viewModelScope.launch {
                 Locator.onDeviceRequest(getApplication(), client, ev)
@@ -423,13 +426,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshConversations() = viewModelScope.launch {
         client.listConversations().onSuccess { list ->
             _state.update { it.copy(conversations = list) }
-            // CC 分頁在清單還沒到就被點開時會停在「還沒有對話」（enterCcTab 提前
+            // 工作區分頁在清單還沒到就被點開時會停在「還沒有對話」（enterCcTab 提前
             // return，而 MainActivity 只在換分頁時再叫它）。清單到了就補切一次
             if (wantCc) enterCcTab()
         }
     }
 
-    /** CC 分頁點開時清單還沒載到，等清單到了要補切過去。 */
+    /** 工作區分頁點開時清單還沒載到，等清單到了要補切過去。 */
     private var wantCc = false
 
     /**
@@ -550,7 +553,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val live = if (before == 0) trail(convId).items else emptyList()
                 // 檔案卡片要跟訊息交錯排回去。卡片不在 CC 的逐字稿裡（那是 butler
                 // 自己造的東西），所以伺服器另外給一份，兩邊都帶 epoch 毫秒。
-                // 不補的話 App 一重啟、或伺服器一重啟，對話裡的下載框就整排消失。
+                // 不補的話 App 一重啟、或伺服器一重啟，對話裡的下載框就整排消失——
+                // 不從這裡補的話，App 或伺服器一重啟，對話裡的下載框就整排消失。
                 //
                 // messages 與 files 都是舊到新，走一次歸併就夠。時間相同時卡片排後面
                 // （伺服器把登記時間的秒數補到 59.999 就是為了這個）：卡片的語意本來
@@ -580,7 +584,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // 排著還沒輪到的訊息，接在最後面——它們是最新的，而且同樣不在
                 // 逐字稿裡（還沒送進 CC）。不補的話使用者會看不到自己剛剛送出了
-                // 什麼，事情卻照跑，最後助理回覆一則使用者不知道自己問過的問題。
+                // 什麼，事情卻照跑，最後助理回覆一則他不知道自己問過的問題。
                 // 已經由事件流放進來的不重複放，理由同上面的檔案卡片。
                 val liveMsgIds = live.filterIsInstance<TraceItem.UserMsg>()
                     .map { it.msgId }.toSet()
@@ -704,16 +708,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── 分頁 ─────────────────────────────────────────────────────────────
-    // 助理頁與工作頁看的是同一條事件流的不同對話：助理頁永遠是 DEFAULT_CONV，
-    // 工作頁是使用者上次選的那個。分頁切換時把 currentConv 換過去就好，
+    // 助理頁與 cc-bot 頁看的是同一條事件流的不同對話：助理頁永遠是 DEFAULT_CONV，
+    // cc-bot 頁是使用者上次選的那個。分頁切換時把 currentConv 換過去就好，
     // 不需要兩套狀態——itemsByConv 本來就是以 conv_id 為 key 的多對話結構。
 
-    /** 工作頁上次看的對話。null＝還沒選過（該頁顯示空狀態）。 */
+    /** cc-bot 頁上次看的對話。null＝還沒選過（該頁顯示空狀態）。 */
     private var ccConv: String? = null
 
     fun enterQiTab() {
-        // pendingNew 也要一併退掉：那是工作頁的待建立狀態，
-        // 帶進助理頁會讓助理的訊息跑去開一條新的工作對話
+        // pendingNew 也要一併退掉：那是 cc-bot 頁的待建立狀態，
+        // 帶進助理頁會讓助理的訊息跑去開一條新的 cc-bot 對話
         val s = _state.value
         markRead(DEFAULT_CONV)
         if (s.currentConv != DEFAULT_CONV || s.pendingNew) switchConversation(DEFAULT_CONV)
@@ -722,10 +726,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun enterCcTab() {
         if (_state.value.pendingNew) return   // 正在開新對話，別把它切走
         // 沒選過就挑清單第一個（排除助理的專屬對話）；一個都沒有就維持原樣，
-        // 由畫面顯示「還沒有對話」而不是誤把別人的內容當成工作頁的
+        // 由畫面顯示「還沒有對話」而不是誤把別人的內容當成 cc-bot 的
         val target = ccConv
             ?: _state.value.conversations
-                .firstOrNull { it.id != DEFAULT_CONV }?.id
+                .firstOrNull { isCcConv(it.id) }?.id
         if (target == null) {
             wantCc = true       // 清單到了再補（見 refreshConversations）
             return
@@ -744,6 +748,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         refreshConversations()
     }
 
+    /**
+     * 課程頁點進某門課：切到那門課的專屬對話（`course:` 加資料夾名）。
+     * 伺服器那邊第一次拉 snapshot 時就會建立它，這裡不必先 POST 新對話。
+     */
+    fun enterCourse(convId: String) {
+        markRead(convId)
+        val s = _state.value
+        if (s.currentConv != convId || s.pendingNew) switchConversation(convId)
+    }
+
     // ── 附件 ─────────────────────────────────────────────────────────────
     /**
      * 挑好的檔案立刻上傳，不等到送訊息時才傳。
@@ -757,18 +771,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(uploading = it.uploading + name, uploadError = null)
         }
+        // 先問大小再決定傳不傳：先前是整份讀進記憶體才檢查，等於「太大」這個
+        // 判斷本身就要先付出那份記憶體的代價（七十幾 MB 的影片在低階手機會 OOM）
         val result = runCatching {
-            val bytes = withContext(Dispatchers.IO) {
-                cr.openInputStream(uri)?.use { s -> s.readBytes() }
-                    ?: error("讀不到這個檔案")
+            val size = querySize(uri)
+            if (size > MAX_UPLOAD_BYTES) {
+                error("檔案太大（${size / (1024 * 1024)}MB，上限 ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB）")
             }
-            if (bytes.size > MAX_UPLOAD_BYTES) {
-                error("檔案太大（${bytes.size / (1024 * 1024)}MB，上限 32MB）")
-            }
-            bytes
-        }.mapCatching { bytes ->
+            size
+        }.mapCatching { size ->
             val mime = cr.getType(uri) ?: "application/octet-stream"
-            Triple(client.uploadFile(name, bytes, mime).getOrThrow(), bytes.size.toLong(), mime)
+            val path = client.uploadFile(name, mime, size) {
+                cr.openInputStream(uri) ?: error("讀不到這個檔案")
+            }.getOrThrow()
+            Triple(path, size.coerceAtLeast(0L), mime)
         }
         _state.update { s ->
             val rest = s.uploading - name
@@ -788,6 +804,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeAttachment(path: String) = _state.update {
         it.copy(attachments = it.attachments.filterNot { a -> a.path == path })
+    }
+
+    /**
+     * 從 content uri 問出檔案大小（bytes）。問不到回 -1：那時候就照傳，
+     * 伺服器也是邊收邊擋的（`transport/files_api.upload_file`），不會被灌爆。
+     */
+    private fun querySize(uri: Uri): Long {
+        val cr = getApplication<Application>().contentResolver
+        return runCatching {
+            cr.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)
+                ?.use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else -1L }
+        }.getOrNull() ?: -1L
     }
 
     /** 從 content uri 問出顯示用的檔名。問不到就交給呼叫端給預設值。 */
@@ -947,7 +975,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun setCwd(path: String): Result<Unit> = client.setCwd(_state.value.currentConv, path)
 
     /**
-     * 只改這一條對話的模型／思考強度（等同另一個前端的 /model_session、/effort_session）。
+     * 只改這一條對話的模型／思考強度（等同 cc-bot 的 /model_session、/effort_session）。
      * 空字串＝清除覆寫、回到跟隨帳號預設。
      *
      * 成功後重拉 snapshot 而不是本地推算：伺服器會 drop client 讓下回合重建，
@@ -961,13 +989,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         const val DEFAULT_CONV = "main"
+        /** 課程助教的對話：前綴加課程資料夾名。跟伺服器 `engine/profiles.py` 的 COURSE_PREFIX 對齊。 */
+        const val COURSE_PREFIX = "course:"
+        fun isCourseConv(id: String) = id.startsWith(COURSE_PREFIX)
+        fun courseConv(name: String) = COURSE_PREFIX + name
         /** 伺服器用來表示「不屬於任何對話」的佔位值（事件的 conv_id／turn_id）。 */
         private const val NO_CONV = "-"
         /** 忙碌中斷多久以內算同一段工作（續跑與重試之間的空檔是毫秒級的）。 */
         private const val BUSY_GAP_MS = 5_000L
         /** 切回同一條對話時，上次 snapshot 超過這麼久才重拉一次（見 needsSnapshot）。 */
         private const val SNAPSHOT_TTL_MS = 60_000L
-        /** 與伺服器 files.MAX_UPLOAD_BYTES 同值：本地先擋，省掉白傳一趟才收到 413。 */
-        private const val MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+        /**
+         * 與伺服器 `files.MAX_UPLOAD_BYTES` 同值：本地先擋，省掉白傳一趟才收到 413。
+         *
+         * 100MB 是**對外那條路的天花板**——手機如果是穿 Cloudflare Tunnel 進來的，
+         * 免費方案對請求主體就限到這裡（Business 才 200MB）。訂得再大只是換成被
+         * 上游擋掉，而那個錯誤長得像網路斷線。
+         *
+         * 兩邊的數字要一起改。曾經 App 停在 32MB 而伺服器已經放到 100MB，
+         * 結果七十幾 MB 的影片在手機上就被自己擋掉了，伺服器根本沒機會收。
+         */
+        private const val MAX_UPLOAD_BYTES = 100L * 1024 * 1024
     }
 }

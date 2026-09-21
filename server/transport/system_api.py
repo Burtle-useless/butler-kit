@@ -110,6 +110,9 @@ async def status(_: str = Depends(require_token)) -> dict[str, Any]:
         # 按重啟之前要知道會不會踩到正在跑的事。這個數字直接決定按鈕的文案：
         # 沒事在跑就是「約半分鐘」，有事在跑就得先說清楚它會被切斷。
         "busy_convs": busy_convs(),
+        # 課程頁是選配的，App 靠這個決定要不要顯示那個分頁——沒開的話
+        # 底下的導覽列就少一格，而不是點進去看到一片空白
+        "courses": config.COURSES_ENABLED,
     }
 
 

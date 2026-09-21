@@ -36,7 +36,7 @@ from dataclasses import dataclass
 import config
 
 from . import agenda_tools, file_tools, kanban_tools, location
-from .options import SYSTEM_APPEND, WORK_APPEND
+from .options import SYSTEM_APPEND, WORK_APPEND, course_append
 from .state import ConvState
 
 
@@ -54,6 +54,18 @@ class Profile:
     append: str                                # system_prompt append 全文（無換行）
     servers: Callable[[ConvState], dict]       # 這條對話要掛的 MCP servers
     src_default: str = "手機"                   # 這個前端預設的來源名（給時間戳用）
+    # 有些 profile 的 append 要看 conv_id 才組得出來——課程對話是一門課一條，
+    # 課名就在 conv_id 裡。給了這個就用它，`append` 只剩註冊時的佔位。
+    append_fn: Callable[[ConvState], str] | None = None
+    # 固定模型／思考程度：有值就壓過對話覆寫與帳號預設（見 state.eff_model）。
+    # 用在「這種對話就該用這個模型」的場合——那種對話通常沒有設定入口，
+    # 不固定住的話帳號預設一改它就跟著漂。
+    model: str | None = None
+    effort: str | None = None
+
+    def append_text(self, state: ConvState) -> str:
+        """這條對話實際要疊上去的 append。動態的優先，沒有就回常數那份。"""
+        return self.append_fn(state) if self.append_fn else self.append
 
 
 def full_servers(state: ConvState) -> dict:
@@ -84,6 +96,26 @@ PRIMARY = Profile(name="primary", append=SYSTEM_APPEND, servers=full_servers)
 
 # 預設：工作精簡版。工作分頁開幾條就有幾條，所以它是「剩下的全部」。
 DEFAULT = Profile(name="work", append=WORK_APPEND, servers=files_only)
+
+# ── 課程對話 ────────────────────────────────────────────────────────────────
+#
+# 一門課一條對話，conv_id 是 `course:<資料夾名>`。課名藏在 id 裡，所以 append
+# 得動態組（`append_fn`）——每門課的資料夾路徑不一樣，模型要知道自己該往哪寫。
+#
+# 只掛傳檔工具：課程對話不碰行事曆也不碰看板，它要的是讀寫那門課的資料夾，
+# 而那件事 Claude Code 自己的檔案工具就做得到。
+COURSE_PREFIX = "course:"
+
+
+def course_name(conv_id: str) -> str:
+    """`course:微積分` → `微積分`。不是課程對話就回空字串。"""
+    return conv_id[len(COURSE_PREFIX):] if conv_id.startswith(COURSE_PREFIX) else ""
+
+
+COURSE = Profile(
+    name="course", append="", servers=files_only,
+    append_fn=lambda st: course_append(course_name(st.conv_id)),
+)
 
 # 前綴 → profile。`""` 永遠在（模組載入時放進去），所以 resolve 一定找得到東西。
 _by_prefix: dict[str, Profile] = {}
@@ -116,3 +148,7 @@ def resolve(conv_id: str) -> Profile:
 
 
 register("", DEFAULT)
+# 課程是選配的：沒開就不註冊，那些 conv_id 會落到預設 profile（等於一條普通
+# 的工作對話）。註冊了才會拿到那份「你是某門課的助教」的 system prompt。
+if config.COURSES_ENABLED:
+    register(COURSE_PREFIX, COURSE)

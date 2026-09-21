@@ -58,6 +58,8 @@ internal object W {
     // 課表 widget 跟 App 內的課表頁一致（Accents 預設全指向 accent）
     val Course = ColorProvider(day = Color(0xFF4A6FA5), night = Color(0xFF7FA0D4))       // Accents.Course
     val CourseNow = ColorProvider(day = Color(0x1F4A6FA5), night = Color(0x2E7FA0D4))    // 同色的襯底
+    // 整週網格裡「不是今天」那幾欄的格子底：淡到幾乎看不見，但足以分出格線
+    val CellOther = ColorProvider(day = Color(0x0D1A1A1A), night = Color(0x0DE6E2DA))
 }
 
 /**
@@ -66,6 +68,7 @@ internal object W {
  * 變成對外介面。這裡只約定四個字串，MainActivity 那端負責認。
  */
 internal const val TAB_DAILY = "daily"
+internal const val TAB_COURSE = "course"
 internal const val TAB_TOOLS = "tools"
 internal const val SUB_COURSE = "course"
 internal const val SUB_CAL = "cal"

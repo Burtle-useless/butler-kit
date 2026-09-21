@@ -20,13 +20,14 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 import config
-from engine import client_pool, location, ports, titles
+from engine import client_pool, location, ports, profiles, titles
 from engine import models as model_catalog
 from engine import state as state_mod
 from engine.worker import Worker
 
 from . import (
     agenda_api,
+    courses_api,
     conversations_api,
     device_api,
     devices_api,
@@ -126,6 +127,8 @@ def _wire() -> None:
 
 _wire()
 app.include_router(agenda_api.router)
+if config.COURSES_ENABLED:
+    app.include_router(courses_api.router)
 app.include_router(kanban_api.router)
 app.include_router(outbox_api.router)
 app.include_router(device_api.router)
@@ -231,6 +234,11 @@ async def delete_conv(conv_id: str, _: str = Depends(require_token)) -> dict:
     # session 對應清掉。這裡擋死，不靠前端不畫按鈕。
     if conv_id == config.PRIMARY_CONV:
         raise HTTPException(status_code=400, detail="助理那條對話不能刪")
+    # 課程對話同理：一門課一條、整個學期不換，刪了等於把那門課的脈絡清掉。
+    # App 的課程頁本來就沒有刪除鈕，這裡一併擋。課程功能關掉時不擋——
+    # 那時候這些 id 只是普通的工作對話。
+    if config.COURSES_ENABLED and conv_id.startswith(profiles.COURSE_PREFIX):
+        raise HTTPException(status_code=400, detail="課程對話不能刪")
     await worker.remove(conv_id)
     _frontends.pop(conv_id, None)
     await client_pool.drop(conv_id)

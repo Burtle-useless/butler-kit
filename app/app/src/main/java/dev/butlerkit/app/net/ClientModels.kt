@@ -117,6 +117,8 @@ data class SystemStatus(
     val subject: String,
     val latestCommit: String = "",
     val latestSubject: String = "",
+    /** 伺服器有沒有開課程功能（`BUTLER_COURSES`）。決定 App 要不要顯示課程分頁。 */
+    val courses: Boolean = false,
 )
 
 /**

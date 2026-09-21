@@ -2,16 +2,31 @@ package dev.butlerkit.app.net
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody
+import okio.BufferedSink
+import okio.source
 import org.json.JSONObject
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 /** 檔案往返：截圖、手機傳檔上去、助理傳下來的檔案。 */
 interface FilesApi {
     suspend fun screenshot(): Result<ByteArray>
-    suspend fun uploadFile(name: String, bytes: ByteArray, mime: String): Result<String>
+
+    /**
+     * 傳一個檔案到電腦，回它在電腦上的絕對路徑。
+     *
+     * 收的是「怎麼打開這個檔」而不是 ByteArray：上限 100MB，整份讀進記憶體等於
+     * 傳一支影片就多佔 100MB 的 heap，低階手機會直接 OOM——而 OOM 的樣子是
+     * App 整個消失，不是一句「上傳失敗」。[size] 小於等於零＝查不到大小，
+     * 交給 OkHttp 走 chunked。
+     */
+    suspend fun uploadFile(
+        name: String, mime: String, size: Long, openStream: () -> InputStream,
+    ): Result<String>
     suspend fun listOfferedFiles(): Result<List<OfferedFile>>
     suspend fun downloadOfferedFile(fileId: String, out: java.io.OutputStream): Result<Long>
 
@@ -22,6 +37,24 @@ interface FilesApi {
      * 換裝置或重建畫面之後圖就沒了。
      */
     suspend fun downloadUpload(name: String, out: java.io.OutputStream): Result<Long>
+}
+
+/**
+ * 從 InputStream 直接串出去的 request body，中間不落一份完整的副本。
+ *
+ * [size] 大於零就當 Content-Length 送（伺服器與 Cloudflare 都看得到大小、能提早擋）；
+ * 查不到大小時回 -1，OkHttp 會改用 chunked。
+ */
+private class StreamBody(
+    private val mime: MediaType,
+    private val size: Long,
+    private val open: () -> InputStream,
+) : RequestBody() {
+    override fun contentType(): MediaType = mime
+    override fun contentLength(): Long = if (size > 0) size else -1L
+    override fun writeTo(sink: BufferedSink) {
+        open().use { input -> input.source().use { src -> sink.writeAll(src) } }
+    }
 }
 
 internal class FilesApiImpl(core: ClientCore) : FilesApi, ClientCore by core {
@@ -45,25 +78,28 @@ internal class FilesApiImpl(core: ClientCore) : FilesApi, ClientCore by core {
      * 傳檔到電腦，回傳它在電腦上的絕對路徑。
      *
      * body 是原始 bytes、檔名走 query 參數（伺服器端刻意不收 multipart）。
-     * 逾時放寬到 120 秒：照片走 tailnet 可能不快，20 秒的預設會在手機訊號差時失敗。
+     * 逾時放寬到 120 秒：照片走行動網路可能不快，20 秒的預設會在訊號差時失敗。
+     * **這兩個逾時是「單次 socket 讀寫」的上限，不是整個請求的**——所以一支
+     * 七十幾 MB 的影片傳上五分鐘也不會被它砍掉，只有真的卡住才會。
      */
-    override suspend fun uploadFile(name: String, bytes: ByteArray, mime: String): Result<String> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val q = java.net.URLEncoder.encode(name, "UTF-8")
-                val req = Request.Builder()
-                    .url("${prefs.baseUrl}/v1/uploads?name=$q").auth()
-                    .post(bytes.toRequestBody(mime.toMediaType()))
-                    .build()
-                apiClient.newBuilder()
-                    .writeTimeout(120, TimeUnit.SECONDS)
-                    .readTimeout(120, TimeUnit.SECONDS)
-                    .build()
-                    .newCall(req).execute().use { r ->
-                        JSONObject(r.textOrThrow()).getString("path")
-                    }
-            }
+    override suspend fun uploadFile(
+        name: String, mime: String, size: Long, openStream: () -> InputStream,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val q = java.net.URLEncoder.encode(name, "UTF-8")
+            val req = Request.Builder()
+                .url("${prefs.baseUrl}/v1/uploads?name=$q").auth()
+                .post(StreamBody(mime.toMediaType(), size, openStream))
+                .build()
+            apiClient.newBuilder()
+                .writeTimeout(120, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
+                .build()
+                .newCall(req).execute().use { r ->
+                    JSONObject(r.textOrThrow()).getString("path")
+                }
         }
+    }
 
     // ── 助理傳來的檔案 ──────────────────────────────────────────────────────
     override suspend fun listOfferedFiles(): Result<List<OfferedFile>> = getJson("/v1/files")

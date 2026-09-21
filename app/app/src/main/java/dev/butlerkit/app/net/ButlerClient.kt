@@ -97,6 +97,7 @@ class ButlerClient private constructor(private val core: ClientCore) :
     DeviceApi by DeviceApiImpl(core),
     FilesApi by FilesApiImpl(core),
     AgendaApi by AgendaApiImpl(core),
+    CoursesApi by CoursesApiImpl(core),
     KanbanApi by KanbanApiImpl(core) {
 
     constructor(prefs: Prefs) : this(HttpCore(prefs))

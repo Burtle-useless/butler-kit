@@ -17,7 +17,7 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 import outbox
-from engine import bg_notify, client_pool, get_state
+from engine import bg_notify, client_pool, get_state, profiles
 from engine import models as model_catalog
 from engine import state as state_mod
 
@@ -213,7 +213,15 @@ async def set_conv_settings(conv_id: str, payload: dict = Body(...),
 
     空字串＝清除覆寫、回到跟隨帳號預設。ConvState 的 model/effort 欄位與
     eff_model/eff_effort 三層邏輯早就在了，先前只是沒有任何端點會寫入它們。
+
+    profile 固定了模型的對話擋在這裡回錯誤，而不是讓寫入成功卻不生效——
+    後者在畫面上是「設定改了但沒有效果」，那比一句錯誤訊息難查得多。
     """
+    fixed = profiles.resolve(conv_id)
+    if fixed.model or fixed.effort:
+        raise HTTPException(
+            status_code=400,
+            detail=f"這條對話的模型由 {fixed.name} profile 固定，改不了")
     from engine.state import eff_effort, eff_model
     st = get_state(conv_id)
     if "model" in payload:

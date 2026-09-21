@@ -106,6 +106,12 @@ fun ChatScreen(
     state: ChatState,
     title: String,
     multiConv: Boolean,
+    /**
+     * 要不要畫自己的標題列。課程頁把聊天畫面嵌在自己的標題與分頁列底下，
+     * 再畫一次就是兩層標題；關掉之後對話設定的入口也一起沒了，
+     * 課程對話因此跟著帳號預設走，這是刻意的。
+     */
+    showTopBar: Boolean = true,
     client: ButlerClient,
     onSend: (String) -> Unit,
     onDraft: (String) -> Unit,
@@ -297,6 +303,7 @@ fun ChatScreen(
             state, listState, input,
             title = title,
             multiConv = multiConv,
+            showTopBar = showTopBar,
             client = client,
             onAnswer = onAnswer,
             onInput = onDraft,
@@ -357,6 +364,7 @@ private fun ChatBody(
     input: String,
     title: String,
     multiConv: Boolean,
+    showTopBar: Boolean,
     client: ButlerClient,
     onAnswer: (String, String, String?) -> Unit,
     onInput: (String) -> Unit,
@@ -406,7 +414,9 @@ private fun ChatBody(
     }
 
     Column(Modifier.fillMaxSize().background(Palette.Bg).imePadding()) {
-        ChatTopBar(state, title, multiConv, onOpenDrawer) { showConvSettings = true }
+        if (showTopBar) {
+            ChatTopBar(state, title, multiConv, onOpenDrawer) { showConvSettings = true }
+        }
         HorizontalDivider(color = Palette.Line, thickness = 0.6.dp)
 
         // 忙的時候也要走下面那條路：狀態列現在住在對話串的尾巴，

@@ -68,6 +68,39 @@ DEFAULT_CWD: Final[Path] = Path(os.environ.get("BUTLER_CWD") or Path.home())
 # dev_console.py 用哪一條對話；人格測試要用乾淨的新對話時從環境變數指定。
 DEV_CONSOLE_CONV: Final[str] = os.environ.get("BUTLER_CONV") or "dev-console"
 
+# ── 課程資料層 ───────────────────────────────────────────────────────────────
+#
+# 課程頁（App 的分頁之一）直接讀這個目錄底下的資料夾，一門課一個
+# （index.md／log.md／raw／notes／對話）。課程對話的 system prompt 也會帶上
+# 對應那門課的路徑，模型才知道該把整理出來的東西寫到哪去。
+#
+# 預設放在家目錄底下；要換位置設 `BUTLER_COURSES_DIR`。目錄不存在時課程頁
+# 就是一片空的，不會報錯——還沒開始用這個功能的人不該被一個錯誤訊息攔住。
+COURSES_DIR: Final[Path] = Path(
+    os.environ.get("BUTLER_COURSES_DIR") or (Path.home() / "courses")
+)
+
+
+def _courses_enabled() -> bool:
+    """課程功能開不開。`BUTLER_COURSES` 說了算，沒說就看目錄在不在。
+
+    預設「看目錄在不在」而不是預設開：這是選配功能，沒在用的人不該看到一個
+    空分頁，模型也不該拿到一份講「把提問記到某個資料夾」的 system prompt——
+    那會讓它在完全無關的對話裡想去寫那些檔案。
+
+    反過來也要能明確關掉：目錄剛好叫那個名字、但不是拿來當課程用的人，
+    設 `BUTLER_COURSES=0` 就好。
+    """
+    raw = (os.environ.get("BUTLER_COURSES") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return COURSES_DIR.is_dir()
+
+
+COURSES_ENABLED: Final[bool] = _courses_enabled()
+
 
 def claude_projects_dir() -> Path:
     """Claude Code 的逐字稿目錄：每個 session 一個 `<專案>/<session_id>.jsonl`。

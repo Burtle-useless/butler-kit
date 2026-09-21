@@ -72,6 +72,11 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_AGENDA, "") ?: ""
         set(v) = sp.edit().putString(KEY_AGENDA, v).apply()
 
+    /** 課程清單（`/v1/courses`）的原始 JSON。離線開課程頁時先畫這份，不必等電腦回應。 */
+    var coursesCache: String
+        get() = sp.getString("courses_cache", "") ?: ""
+        set(v) = sp.edit().putString("courses_cache", v).apply()
+
     /**
      * 上次拉到的用量原始 JSON，給桌面 widget 用。
      *

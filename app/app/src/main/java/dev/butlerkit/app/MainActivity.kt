@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,6 +67,7 @@ import dev.butlerkit.app.ui.ActionButton
 import dev.butlerkit.app.ui.AgendaScreen
 import dev.butlerkit.app.ui.ButlerTheme
 import dev.butlerkit.app.ui.ChatScreen
+import dev.butlerkit.app.ui.CourseScreen
 import dev.butlerkit.app.ui.ChatViewModel
 import dev.butlerkit.app.ui.PetFace
 import dev.butlerkit.app.ui.Palette
@@ -90,9 +92,20 @@ import dev.butlerkit.app.ui.Type
 private enum class Tab(val label: String, val icon: ImageVector?) {
     Qi("助理", null),                                  // 助理的圖示是牠本人，不是向量圖
     Work("工作", Icons.AutoMirrored.Filled.List),
+    Course("課程", Icons.Filled.School),
     Daily("日常", Icons.Filled.DateRange),
     Tools("工具", Icons.Filled.Build),
 }
+
+/**
+ * 這次要顯示哪幾格。
+ *
+ * 課程是選配的（伺服器端的 `BUTLER_COURSES`），沒開就整格不出現——點進去
+ * 看到一片空白比少一格難理解得多。伺服器還沒回答之前先當成沒開：
+ * 少一格再多出來，比多一格再消失自然。
+ */
+private fun tabsFor(courses: Boolean): List<Tab> =
+    Tab.entries.filter { courses || it != Tab.Course }
 
 /**
  * 從通知或桌面 widget 帶進來的導航目標。
@@ -191,6 +204,18 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
     var settingsOpen by remember { mutableStateOf(false) }
     // widget 指定的子分頁。日常頁切過去之後就清掉，見 AgendaScreen 的 onSubConsumed
     var pendingSub by remember { mutableStateOf<String?>(null) }
+    // 通知點進來要直接落在哪一門課（資料夾名）
+    var pendingCourse by remember { mutableStateOf<String?>(null) }
+    // 伺服器有沒有開課程功能。問一次就好——這個設定要改得重啟服務。
+    // 預設 false：還沒問到答案之前少一格，比多一格再消失自然。
+    var coursesOn by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        vm.client.systemStatus().onSuccess { coursesOn = it.courses }
+    }
+    val tabs = remember(coursesOn) { tabsFor(coursesOn) }
+    // 伺服器關掉課程功能時，人可能正停在那一格上——把他帶回工作頁，
+    // 否則畫面會卡在一個底欄上已經不存在的分頁
+    LaunchedEffect(coursesOn) { if (!coursesOn && tab == Tab.Course) tab = Tab.Work }
     // 每個分頁各自的狀態保管處，見下面 SaveableStateProvider 的說明
     val tabStates = rememberSaveableStateHolder()
     // 操作失敗的一句話。放在設定那層之前收：改設定失敗也要看得到
@@ -216,6 +241,10 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                 // 而從通知點進來時 tab 常常本來就停在助理頁——那條路上
                 // enterQiTab 不執行，markRead 也就不執行，通知點了不會消失。
                 vm.enterQiTab()
+            } else if (coursesOn && ChatViewModel.isCourseConv(it)) {
+                // 課程對話的通知：進課程頁、直接落在那門課的工作區
+                tab = Tab.Course
+                pendingCourse = it.removePrefix(ChatViewModel.COURSE_PREFIX)
             } else {
                 tab = Tab.Work
                 vm.switchCcConversation(it)
@@ -226,6 +255,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                 tab = Tab.Daily
                 pendingSub = nav.sub
             }
+            "course" -> if (coursesOn) tab = Tab.Course
             "tools" -> tab = Tab.Tools
         }
     }
@@ -269,7 +299,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                 containerColor = Palette.Surface,
                 tonalElevation = 0.dp,
             ) {
-                Tab.entries.forEach { t ->
+                tabs.forEach { t ->
                     NavigationBarItem(
                         selected = tab == t,
                         onClick = { tab = t },
@@ -349,6 +379,10 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                         onConvSettings = vm::applyConvSettings,
                         onLoadOlder = { vm.loadOlder(state.currentConv) },
                     )
+                    Tab.Course -> CourseScreen(
+                        state = state, vm = vm,
+                        pendingCourse = pendingCourse,
+                    ) { pendingCourse = null }
                     Tab.Daily -> AgendaScreen(vm.client, pendingSub) { pendingSub = null }
                     Tab.Tools -> ToolsScreen(vm.client) { settingsOpen = true }
                 }

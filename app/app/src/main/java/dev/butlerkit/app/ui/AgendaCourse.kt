@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -25,9 +26,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -36,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import dev.butlerkit.app.data.AgendaRepo
 import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.Course
+import dev.butlerkit.app.net.CourseInfo
 import dev.butlerkit.app.net.Period
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -44,20 +48,31 @@ import org.json.JSONObject
 import java.util.Calendar
 
 // ── 課表 ─────────────────────────────────────────────────────────────────────
+//
+// 檔名還叫 AgendaCourse 是歷史：課表原本只是日常頁的一個分頁，後來課程頁也要用
+// 當課程工作區的入口（[CourseScreen]）。內容沒變，只是多了「點一格進那門課」。
 
 /**
- * 課表：一排星期切換 ＋ 那天的課依節次排下來 ＋ 可改的節次時間表。
+ * 課表：週一覽／單日 ＋ 可改的節次時間表 ＋ 加課。
  *
- * 為什麼不是七乘十二的網格：手機寬度分成七欄之後每格只剩四十幾 dp，課名一個字都塞不
- * 進去。而課表最常被問的是「今天接下來上什麼」，那本來就是單日的事。星期列上的小點
- * 負責補回「哪幾天有課」這個一眼可見的資訊。
+ * 週一覽是預設——課表總要有一張一覽圖；單日那面回答「今天接下來上什麼」。
+ * 節次時間預設是常見的排法，不是他學校的——所以擺在同一頁可以改，而不是寫死在程式裡。
  *
- * 節次時間預設是常見的排法，各校不一定相同——所以擺在同一頁可以改，而不是寫死在程式裡。
+ * [resolve] 把課表上的一格對到課程資料夾（對不到＝那門課還沒建資料夾），
+ * [onOpenCourse] 是進工作區。[lead]／[extra] 讓呼叫端在課表卡前後插自己的東西
+ * （課程頁放「現在這堂」與課程清單）——整頁是一個 LazyColumn，不能在外面再包一層捲動。
  */
 @Composable
 internal fun CoursePane(
     ctx: Context, scope: CoroutineScope, client: ButlerClient,
     courses: List<Course>, periods: List<Period>, today: String,
+    // 這兩個是給課程頁用的：課表格子點下去要能跳進那門課的工作區。
+    // 課程功能是選配的，日常頁的課表照樣要能用，所以給預設值——
+    // resolve 回 null 就是「這一格對不到任何課程資料夾」，格子照畫、點不進去。
+    resolve: (Course) -> CourseInfo? = { null },
+    onOpenCourse: (CourseInfo) -> Unit = {},
+    lead: LazyListScope.() -> Unit = {},
+    extra: LazyListScope.() -> Unit = {},
 ) {
     var day by remember { mutableStateOf(todayDay()) }
     // 同 CalendarPane：沒手動選過星期就跟著今天走。停在課表過夜的話，
@@ -74,32 +89,67 @@ internal fun CoursePane(
     // 節次表的草稿。key 帶 periods：伺服器那份變了（助理改過、或另一台裝置改過）
     // 就重置，不然畫面上會留著一份對不上的舊表。
     var draft by remember(periods) { mutableStateOf(periods) }
+    // 週一覽／單日。**預設週**：使用者要的就是「總要有個一覽圖」，
+    // 而單日那些資訊在週表上點一下也看得到
+    var weekly by rememberSaveable { mutableStateOf(true) }
+    var picked by remember { mutableStateOf<Course?>(null) }
 
     val byDay = remember(courses) { courses.groupBy { it.day } }
     val dayCourses = byDay[day].orEmpty().sortedBy { it.fromPeriod }
     val span = remember(periods) { periods.associateBy { it.no } }
     val maxNo = periods.maxOfOrNull { it.no } ?: 12
 
+    picked?.let { c ->
+        val info = resolve(c)
+        CourseDetail(
+            c, span,
+            onClose = { picked = null },
+            onDelete = {
+                scope.launch { AgendaRepo.remove(ctx, client, "courses", c.id) }
+                picked = null
+            },
+            onOpen = info?.let { { picked = null; onOpenCourse(it) } },
+        )
+    }
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(Space.Screen),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        lead()
+
         item {
             Card(pad = 10.dp) {
-                Row(Modifier.fillMaxWidth()) {
-                    WEEK.forEachIndexed { i, w ->
-                        WeekCell(
-                            label = w, on = i == day, today = i == todayDay(),
-                            count = byDay[i].orEmpty().size, tint = Accents.Course,
-                            modifier = Modifier.weight(1f),
-                        ) { day = i; dayByHand = true }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "課表", color = Palette.Text, fontSize = Type.Body,
+                        fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f),
+                    )
+                    ViewToggle("週", weekly) { weekly = true }
+                    ViewToggle("日", !weekly) { weekly = false }
+                }
+                if (weekly) {
+                    CourseGrid(courses, periods, todayDay()) { picked = it }
+                } else {
+                    Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                        WEEK.forEachIndexed { i, w ->
+                            WeekCell(
+                                label = w, on = i == day, today = i == todayDay(),
+                                count = byDay[i].orEmpty().size, tint = Accents.Course,
+                                modifier = Modifier.weight(1f),
+                            ) { day = i; dayByHand = true }
+                        }
                     }
                 }
             }
         }
 
-        item {
+        if (!weekly) item {
             SectionHead(
                 if (day == todayDay()) "今天（週${WEEK[day]}）" else "週${WEEK[day]}",
                 hint = if (dayCourses.isEmpty()) null else "${dayCourses.size} 堂",
@@ -107,7 +157,18 @@ internal fun CoursePane(
             )
         }
 
-        if (dayCourses.isEmpty()) {
+        if (!weekly && day == todayDay() && dayCourses.isNotEmpty()) {
+            item {
+                // 「現在第幾節、正在上什麼、下一堂幾點」：課表最常被問的那一句
+                val cal = Calendar.getInstance()
+                val now = nowSlot(
+                    periods, dayCourses,
+                    cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE),
+                )
+                NowLine(now)
+            }
+        }
+        if (!weekly && dayCourses.isEmpty()) {
             item {
                 Text(
                     "這天沒課。", color = Palette.TextFaint, fontSize = Type.Body,
@@ -115,46 +176,53 @@ internal fun CoursePane(
                 )
             }
         }
-        items(dayCourses, key = { it.id }) { c ->
-            StripeRow(
-                tint = Accents.Course,
-                lead = {
+        items(if (weekly) emptyList() else dayCourses, key = { it.id }) { c ->
+            // 單日列點下去跟週表格子一樣開詳情——那裡才有「進工作區」。
+            // StripeRow 沒有 modifier 參數（它自己管圓角與裁切），點擊包在外面；
+            // 圓角要跟它一樣，不然按下去的漣漪是方的
+            Box(Modifier.clip(Radii.Card).clickable(role = Role.Button) { picked = c }) {
+                StripeRow(
+                    tint = Accents.Course,
+                    lead = {
+                        Text(
+                            periodLabel(c), color = Accents.Course,
+                            fontSize = Type.Body, fontWeight = FontWeight.Bold,
+                        )
+                        // 節次換算成幾點幾分：光看「第三節」還是得心算
+                        Text(
+                            span[c.fromPeriod]?.start.orEmpty(),
+                            color = Palette.TextFaint, fontSize = Type.Tiny,
+                        )
+                    },
+                    actions = {
+                        IconBtn(Icons.Filled.Close, "刪掉這堂課") {
+                            scope.launch { AgendaRepo.remove(ctx, client, "courses", c.id) }
+                        }
+                    },
+                ) {
                     Text(
-                        periodLabel(c), color = Accents.Course,
-                        fontSize = Type.Body, fontWeight = FontWeight.Bold,
+                        c.name, color = Palette.Text, fontSize = Type.Body,
+                        fontWeight = FontWeight.Medium,
                     )
-                    // 節次換算成幾點幾分：光看「第三節」還是得心算
-                    Text(
-                        span[c.fromPeriod]?.start.orEmpty(),
-                        color = Palette.TextFaint, fontSize = Type.Tiny,
-                    )
-                },
-                actions = {
-                    IconBtn(Icons.Filled.Close, "刪掉這堂課") {
-                        scope.launch { AgendaRepo.remove(ctx, client, "courses", c.id) }
+                    val who = listOf(c.teacher, c.room).filter { it.isNotBlank() }
+                    if (who.isNotEmpty()) {
+                        Text(
+                            who.joinToString("・"),
+                            color = Palette.TextDim, fontSize = Type.Meta,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
                     }
-                },
-            ) {
-                Text(
-                    c.name, color = Palette.Text, fontSize = Type.Body,
-                    fontWeight = FontWeight.Medium,
-                )
-                val who = listOf(c.teacher, c.room).filter { it.isNotBlank() }
-                if (who.isNotEmpty()) {
-                    Text(
-                        who.joinToString("・"),
-                        color = Palette.TextDim, fontSize = Type.Meta,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
-                if (c.note.isNotBlank()) {
-                    Text(c.note, color = Palette.TextFaint, fontSize = Type.Meta)
+                    if (c.note.isNotBlank()) {
+                        Text(c.note, color = Palette.TextFaint, fontSize = Type.Meta)
+                    }
                 }
             }
         }
 
+        extra()
+
         item {
-            // 加到哪一天不必再選——使用者剛剛才點過上面的星期。同 CalendarPane 的理由
+            // 加到哪一天不必再選——他剛剛才點過上面的星期。同 CalendarPane 的理由
             AddPanel(
                 label = "加到週${WEEK[day]}",
                 tint = Accents.Course,
@@ -176,6 +244,19 @@ internal fun CoursePane(
                     }
                 },
             ) {
+                // 週表上沒有星期列可以點，而且沒課的那幾天連欄位都沒有——
+                // 不給選的話「加到週六」會是一句沒有依據的話
+                if (weekly) {
+                    Row(Modifier.fillMaxWidth()) {
+                        WEEK.forEachIndexed { i, w ->
+                            WeekCell(
+                                label = w, on = i == day, today = i == todayDay(),
+                                count = byDay[i].orEmpty().size, tint = Accents.Course,
+                                modifier = Modifier.weight(1f),
+                            ) { day = i; dayByHand = true }
+                        }
+                    }
+                }
                 Field(name, "課程名稱") { name = it }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box(Modifier.weight(1f)) { Field(teacher, "老師") { teacher = it } }
@@ -344,7 +425,7 @@ private fun periodTimeHint(span: Map<Int, Period>, from: Int, to: Int): String {
  * 接在最後一節後面的新一節：中間空十分鐘下課，長度沿用最後一節。
  *
  * 沿用長度而不是固定五十分鐘：改過節次表的人多半整份都是同一種長度，
- * 猜錯的話使用者還得再點一次時間選擇器。
+ * 猜錯的話他還得再點一次時間選擇器。
  */
 private fun nextPeriod(rows: List<Period>): Period {
     val last = rows.maxByOrNull { it.no }
@@ -373,7 +454,7 @@ internal fun minsOrNull(t: String): Int? {
 }
 
 /** 同 [minsOrNull]，解不出來當 00:00。用在「算出來還是要給個數字」的地方。 */
-private fun minsOf(hhmm: String): Int = minsOrNull(hhmm) ?: 0
+internal fun minsOf(hhmm: String): Int = minsOrNull(hhmm) ?: 0
 
 /** 時刻加減分鐘。跨過午夜就停在 23:59——課表不會排到隔天，那種輸入是手滑。 */
 private fun addMin(hhmm: String, min: Int): String {
@@ -381,6 +462,29 @@ private fun addMin(hhmm: String, min: Int): String {
     if (total >= 24 * 60) return "23:59"
     return "${two(total / 60)}:${two(total % 60)}"
 }
+
+/** 單日檢視頂上那一行：現在第幾節・正在上什麼　下一堂幾點・什麼課。 */
+@Composable
+internal fun NowLine(now: NowInfo) {
+    val head = when {
+        now.current != null -> "現在第${now.period}節　${now.current.name}"
+        now.period != null -> "現在第${now.period}節　空堂"
+        else -> "現在下課"
+    }
+    val tail = now.next?.let { n ->
+        "下一堂 ${now.nextStart.ifBlank { "第${n.fromPeriod}節" }}　${n.name}" +
+            (if (n.room.isNotBlank()) "・${n.room}" else "")
+    } ?: "今天沒有下一堂了"
+    Column(
+        Modifier.fillMaxWidth().clip(Radii.Tiny)
+            .background(Palette.Text.soft())
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(head, color = Palette.Text, fontSize = Type.Body, fontWeight = FontWeight.Medium)
+        Text(tail, color = Palette.TextDim, fontSize = Type.Meta)
+    }
+}
+
 
 /** 今天是星期幾，0=週一。Calendar 是 1=週日，換算過。 */
 internal fun todayDay(): Int =

@@ -267,6 +267,38 @@ WORK_APPEND = (
 )
 
 
+# ── 課程對話：一門課一條，人格相同、資料夾不同 ──────────────────────────────
+#
+# 這份是**每條對話動態組的**（要帶課名與資料夾路徑），所以是函式不是常數。
+# 人格在 `personas/course.txt`，這裡只負責把「你管的是哪一門、檔案放哪」接上去。
+#
+# 課名直接取自資料夾名（conv_id 去掉 `course:` 前綴），路徑用 as_posix 帶進去
+# ——模型拿到的路徑要能直接貼進 Bash。
+def course_append(course: str) -> str:
+    """課程對話的 append，綁定 [course] 這門課。純函式，測試可以直接驗。"""
+    folder = (config.COURSES_DIR / course).as_posix()
+    rules = (
+        f"這條對話固定綁「{course}」這門課，整個學期都是這一條，"
+        "不用判斷他在問哪一科——在這裡問的一律算這門課；"
+        "只有他明講是別科的題目時，才照他說的科目處理。"
+        f"這門課的資料夾是 {folder}/："
+        "index.md 是課程資訊與理解進度表，log.md 是提問流水帳，"
+        "raw/ 放講義與教材原檔，notes/ 放你整理過的筆記，對話/ 是對話原文。"
+        "他問問題就先答，答完靜默追加一行到 log.md（用 Bash 追加，不要整檔重寫），"
+        "回覆裡不要說「已記錄」——那是雜訊，他正在上課。"
+        "他說整理、複習、或問自己學到哪的時候，把 log 整理進 index.md 的理解進度表："
+        "程度只有懂、半懂、不會三種，依據欄沒有實際檢核過就一律寫「提問推斷」，"
+        "不准寫得比實際情況好。"
+        "教材與筆記歸你管：他傳上來的講義照片與 PDF 放進 raw/，"
+        "你整理出來的放 notes/，他要看某一份就用傳檔工具送過去。"
+    )
+    return (
+        persona.load("course") + rules + _RULE_TIME + _RULE_SOURCE + _RULE_SUBAGENT
+        + _RULE_SENDFILE + _RULE_NO_RESTART + _RULE_RICH
+        + _RULE_ASK_MARKER + _RULE_MARKERS
+    )
+
+
 # PreToolUse hook 要攔哪些工具（工具名的 regex）。
 #
 # **抽成常數是為了讓測試能直接驗。** 這裡跟 `safety.needs_confirm` 是一組的：

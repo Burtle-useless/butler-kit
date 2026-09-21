@@ -132,6 +132,10 @@ Claude Code 永遠完不成握手，卡滿 60 秒後拋 `Control request timeout
 | `_RULE_SUBAGENT` | 兩份 | 子代理用自己的預設語言回話，兩種語言混在同一個畫面上 |
 | `_RULE_RICH` | 兩份 | 模型不知道 App 畫得出數學式、圖表與圖片，遇到公式會拿 Unicode 上下標硬湊。**換掉 App 或接別的前端時要跟著改**，否則它會對著畫不出來的地方寫 LaTeX |
 
+課程對話另有一份 append（`course_append`），是**依課名動態組**的：人格在
+`personas/course.txt`，功能規則（那門課的資料夾在哪、提問記到哪個檔）由程式接上去。
+這整套是**選配的**，開關見 README 的「課程頁」。
+
 `_RULE_SUBAGENT` 值得多講一句，因為它修的是一個**你在人格檔裡改不掉**的問題：
 
 > **子代理讀不到你的人格檔。** 派出去的 Agent 拿的是 Claude Code 自己那份
