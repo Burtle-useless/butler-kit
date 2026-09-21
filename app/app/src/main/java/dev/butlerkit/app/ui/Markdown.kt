@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -20,10 +22,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -42,7 +48,13 @@ import kotlinx.coroutines.delay
  *
  * 這裡刻意不引第三方 Markdown 函式庫：手機聊天訊息只會用到粗體、行內程式碼、
  * 程式碼區塊、列表和超連結這幾種，為此拉一個完整的 CommonMark 實作進來不划算。
- * 表格畫成等寬欄的簡表（見 [TableBlock]）；圖片不支援。
+ * 表格畫成等寬欄的簡表（見 [TableBlock]）。
+ *
+ * 除了 Markdown 本身，這裡還認三種「畫出來」的東西，各自有自己的檔案：
+ *
+ *   `$…$` `$$…$$`   數學式  → `Math.kt`／`MathView.kt`
+ *   ```chart 區塊    圖表    → `Chart.kt`／`ChartView.kt`
+ *   `![說明](網址)`  圖片    → `NetImage.kt`（只認 http(s)，獨立一行才算）
  *
  * 註：**程式碼區塊裡的網址仍然點不了**（那是刻意的，區塊內容要原樣可複製）。
  * 要給人點的網址別包在反引號或 ``` 裡面。
@@ -227,12 +239,19 @@ private fun tidy(text: String): String = text.lines().joinToString("\n") { line 
     } ?: if (line.startsWith("> ")) "│ " + line.removePrefix("> ") else line
 }
 
-/** 把一段內文再切成「標題行」「表格」與「段落」，各自有各自的畫法。 */
+/** 把一段內文再切成「標題行」「表格」「獨立算式」與「段落」，各自有各自的畫法。 */
 private sealed interface Chunk {
     data class Heading(val text: String) : Chunk
     data class Para(val text: String) : Chunk
     data class Table(val rows: List<List<String>>) : Chunk
+    data class Math(val src: String) : Chunk
+    data class Img(val url: String, val alt: String) : Chunk
 }
+
+// 獨立一行的圖片。行內的圖片不攔——那會變成一個很大的字卡在句子中間，
+// 而 markdown 的圖片語法在段落裡本來就少見；沒攔到的會退化成一個可以點的
+// 連結（inline 的 LINK 會吃掉 `[alt](url)` 那半段），點開一樣看得到圖。
+private val IMAGE_LINE = Regex("""^!\[([^\]]*)]\((https?://[^)\s]+)\)$""")
 
 private val TABLE_SEP = Regex("""^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$""")
 
@@ -243,6 +262,8 @@ private fun splitHeadings(body: String): List<Chunk> {
     val out = mutableListOf<Chunk>()
     val para = StringBuilder()
     val table = mutableListOf<List<String>>()
+    val math = StringBuilder()
+    var inMath = false
     fun flush() {
         if (para.isNotBlank()) out += Chunk.Para(para.toString().trim('\n'))
         para.clear()
@@ -253,6 +274,37 @@ private fun splitHeadings(body: String): List<Chunk> {
     }
     for (line in body.lines()) {
         val t = line.trim()
+        // 獨立算式。跨行的 $$ … $$ 要自己收尾，因為模型常把長式子拆成好幾行寫
+        if (inMath) {
+            if (t.endsWith("$$")) {
+                math.append(t.removeSuffix("$$"))
+                out += Chunk.Math(math.toString().trim())
+                math.clear()
+                inMath = false
+            } else {
+                math.append(line).append('\n')
+            }
+            continue
+        }
+        if (t.startsWith("$$")) {
+            flushTable()
+            flush()
+            val rest = t.removePrefix("$$")
+            if (rest.endsWith("$$") && rest.length >= 2) {
+                out += Chunk.Math(rest.removeSuffix("$$").trim())
+            } else {
+                math.append(rest).append('\n')
+                inMath = true
+            }
+            continue
+        }
+        val img = IMAGE_LINE.find(t)
+        if (img != null) {
+            flushTable()
+            flush()
+            out += Chunk.Img(img.groupValues[2], img.groupValues[1])
+            continue
+        }
         if (t.startsWith("|") && t.length > 1) {
             // 表格：連續的 | 開頭行。分隔列（|---|---|）只是標記，不畫
             if (table.isEmpty()) flush()
@@ -267,6 +319,8 @@ private fun splitHeadings(body: String): List<Chunk> {
             para.append(line).append('\n')
         }
     }
+    // 串流中途可能還沒等到收尾的 $$，已經有的先畫出來
+    if (inMath && math.isNotBlank()) out += Chunk.Math(math.toString().trim())
     flushTable()
     flush()
     return out
@@ -309,6 +363,72 @@ private fun TableBlock(rows: List<List<String>>) {
             }
         }
     }
+}
+
+/**
+ * 一般段落。裡面若夾著行內算式（`$...$`）就把那幾段換成畫出來的式子。
+ *
+ * 用 Compose 的 inline content 而不是把段落切成好幾個 Text 橫排：切開之後
+ * 每一段各自換行，句子會在公式前後斷得亂七八糟。inline content 是把式子
+ * 當成一個「很大的字」塞進同一段文字流裡，換行照舊由排版決定。
+ *
+ * 順序是先 [tidy] 再找公式：反過來的話 `- ` 換成 `・` 會讓字串長度變動，
+ * 之前記下的公式位置就全部偏掉——而偏掉的結果是截到半條式子，不會報錯。
+ */
+@Composable
+private fun Paragraph(text: String, c: Colors) {
+    val body = remember(text) { tidy(text) }
+    val spans = remember(body) { findMath(body) }
+    if (spans.isEmpty()) {
+        Text(
+            inline(body, c),
+            color = Palette.Text,
+            fontSize = Type.Body,
+            lineHeight = Type.BodyLine,
+            fontFamily = FontFamily.SansSerif,
+        )
+        return
+    }
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val sizes = remember(body, density) {
+        spans.map { mathSizePx(measurer, density, it.body, Type.Body, inline = true) }
+    }
+    val annotated = remember(body, c, sizes) {
+        buildAnnotatedString {
+            var cursor = 0
+            spans.forEachIndexed { i, s ->
+                append(inline(body.substring(cursor, s.range.first), c))
+                // 第二個參數是萬一放不下時的替代文字，給原始碼比給空白好查
+                appendInlineContent("m$i", s.body)
+                cursor = s.range.last + 1
+            }
+            append(inline(body.substring(cursor), c))
+        }
+    }
+    val content = remember(sizes) {
+        sizes.mapIndexed { i, wh ->
+            "m$i" to InlineTextContent(
+                Placeholder(
+                    width = with(density) { wh.first.toSp() },
+                    height = with(density) { wh.second.toSp() },
+                    // 跟著文字垂直置中。基線對齊看起來更正統，但有下標的式子
+                    // 會整個往上浮——置中在兩種情況下都不難看
+                    placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
+                ),
+            ) { MathView(spans[i].body, inline = true) }
+        }.toMap()
+    }
+    Text(
+        annotated,
+        inlineContent = content,
+        color = Palette.Text,
+        fontSize = Type.Body,
+        // 行高維持跟其他段落一樣。行內式在 MathView 的 inline 模式下高度已經
+        // 壓在一行之內（分數走斜線），不需要為了它們把整段撐鬆
+        lineHeight = Type.BodyLine,
+        fontFamily = FontFamily.SansSerif,
+    )
 }
 
 /**
@@ -378,17 +498,22 @@ fun MarkdownText(src: String, modifier: Modifier = Modifier) {
                             fontWeight = FontWeight.Bold,
                             lineHeight = Type.BodyLine,
                         )
-                        is Chunk.Para -> Text(
-                            inline(tidy(chunk.text), c),
-                            color = Palette.Text,
-                            fontSize = Type.Body,
-                            lineHeight = Type.BodyLine,
-                            fontFamily = FontFamily.SansSerif,
-                        )
+                        is Chunk.Para -> Paragraph(chunk.text, c)
                         is Chunk.Table -> TableBlock(chunk.rows)
+                        is Chunk.Math -> MathBlock(chunk.src)
+                        is Chunk.Img -> MarkdownImage(chunk.url, chunk.alt)
                     }
                 }
-                is Block.Code -> CodeBlock(b.text, b.lang)
+                // ```chart 是一張圖不是一段程式碼。解析不出來就照原樣顯示——
+                // 模型寫壞了的時候看得到自己寫了什麼，比一個空框有用
+                is Block.Code -> {
+                    val chart = if (b.lang.equals("chart", true)) {
+                        remember(b.text) { parseChart(b.text) }
+                    } else {
+                        null
+                    }
+                    if (chart != null) ChartView(chart) else CodeBlock(b.text, b.lang)
+                }
             }
         }
     }

@@ -29,11 +29,18 @@ android {
         versionCode = 1
         versionName = "0.1"
 
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         // ML Kit 的翻譯引擎帶 native lib，四種架構全打包會讓 APK 從 10MB 漲到 75MB。
-        // 只留 arm64-v8a：現役 Android 手機一律是這個架構，而這支 App 只裝在他自己手機上。
-        // 要裝到模擬器或舊 32 位裝置時再把 armeabi-v7a 加回來。
+        // 只留 arm64-v8a：現役 Android 手機一律是這個架構。要裝到舊的 32 位裝置
+        // 再把 armeabi-v7a 加回來。
         ndk {
             abiFilters += listOf("arm64-v8a")
+            // 模擬器多半是 x86_64，只打包 arm64 連裝都裝不上
+            // （INSTALL_FAILED_NO_MATCHING_ABIS）。要跑 connectedAndroidTest
+            // 就加 `-PemulatorAbi`；出給手機的那份不要加，多一個架構的
+            // native lib 會讓 APK 大一截。
+            if (project.hasProperty("emulatorAbi")) abiFilters += listOf("x86_64")
         }
 
         buildConfigField("String", "CF_ACCESS_CLIENT_ID", "\"${secret("cfAccessClientId")}\"")
@@ -109,5 +116,17 @@ dependencies {
     // 語音轉文字與朗讀都用系統內建（SpeechRecognizer / TextToSpeech），不必額外依賴。
     implementation("com.google.mlkit:translate:17.0.3")
 
+    // 畫面驗證：渲染一段內容、截圖、用眼睛比對。數學式與圖表是畫出來的東西，
+    // 排版錯了單元測試看不見——上下標疊在一起、分數線位置偏掉，都只能用眼睛驗。
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    // BOM 要再套一次：它只管得到宣告它的那個 configuration，
+    // androidTest 這條沒套的話 ui-test-junit4 會變成「沒有版本」解不出來
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+
     testImplementation("junit:junit:4.13.2")
+    // 單元測試裡的 org.json 是 stub（呼叫一律丟「not mocked」），要換成真的實作。
+    // ChartTest 解析圖表 JSON 全靠它。
+    testImplementation("org.json:json:20240303")
 }

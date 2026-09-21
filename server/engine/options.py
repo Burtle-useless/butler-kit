@@ -189,6 +189,35 @@ _RULE_SUBAGENT = (
 )
 
 
+# 11. App 畫得出來的東西。
+#
+# App 的 Markdown 渲染除了粗體、清單、表格與程式碼區塊之外，還認數學式、圖表
+# 與圖片（見 `app/.../ui/Markdown.kt` 與它旁邊的 Math/Chart/NetImage）。
+# 模型不會自己知道這件事——不明講的話它遇到公式會拿 Unicode 上下標硬湊，
+# 畫出來下標擠在一起、分數只能寫成斜線。
+#
+# 這條描述的是**前端的能力**。自己換掉 App、或接別的前端（Discord、聊天軟體）
+# 時要跟著改或整條拿掉，否則模型會對著一個畫不出來的地方寫 LaTeX。
+_RULE_RICH = (
+    "**App 畫得出數學式、圖表與圖片**，不要用 Unicode 上下標硬湊。"
+    "數學式用 LaTeX：夾在句子裡寫 $E = mc^2$，自己佔一行的用 $$ 包起來。"
+    "上下標、分數 \\frac{a}{b}、根號 \\sqrt{x}、向量 \\vec{F}、"
+    "希臘字母 \\alpha、運算子 \\times \\leq \\approx 都畫得出來，"
+    "單位與文字用 \\text{N} 包起來才不會被當成變數。"
+    "**矩陣與多行對齊畫不出來**，那種就拆成幾條獨立式分開寫。"
+    "要畫圖表就寫一段 ```chart 區塊，裡面放 JSON："
+    '{"kind":"line","title":"標題","x":"橫軸","y":"縱軸",'
+    '"series":[{"name":"這條線叫什麼","points":[[1,18],[2,4.5]]}]}。'
+    "kind 有 line／bar／scatter／area 四種；長條圖與分類軸改用 "
+    '{"kind":"bar","labels":["一月","二月"],"series":[{"name":"收入","values":[100,200]}]}。'
+    "**只收算好的點，不收函數式**——要畫 1/r² 就自己取樣二三十個點填進去。"
+    "網路上的圖片用 ![說明](網址) 單獨放一行就會顯示出來，"
+    "但你自己產的檔案不要這樣寫，那些要用傳檔工具送過去。"
+    "這幾樣是**需要的時候才用**：一般聊天寫成式子反而難讀，"
+    "數字少的時候直接講數字比畫一張圖清楚。"
+)
+
+
 def _amnesia_rule() -> str:
     """失憶自救。沒設 BUTLER_NOTES_FILE 就整條不加。
 
@@ -219,7 +248,7 @@ def _amnesia_rule() -> str:
 SYSTEM_APPEND = (
     persona.load(config.PERSONA) + _amnesia_rule() + _RULE_TIME + _RULE_SOURCE
     + _RULE_SUBAGENT + _RULE_AGENDA + _RULE_KANBAN + _RULE_SENDFILE + _RULE_WHERE
-    + _RULE_NO_RESTART + _RULE_ASK_MARKER + _RULE_MARKERS
+    + _RULE_NO_RESTART + _RULE_RICH + _RULE_ASK_MARKER + _RULE_MARKERS
 )
 
 # ── 工作區分頁：不套人格 ──────────────────────────────────────────────────────
@@ -233,7 +262,7 @@ SYSTEM_APPEND = (
 # 其餘一律交還給 Claude Code 的預設行為，這才是「純工作」該有的樣子。
 WORK_APPEND = (
     persona.load(config.WORK_PERSONA) + _RULE_TIME + _RULE_SOURCE
-    + _RULE_SUBAGENT + _RULE_SENDFILE + _RULE_NO_RESTART
+    + _RULE_SUBAGENT + _RULE_SENDFILE + _RULE_NO_RESTART + _RULE_RICH
     + _RULE_ASK_MARKER + _RULE_MARKERS
 )
 
