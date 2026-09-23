@@ -100,16 +100,30 @@ class CourseGridTest {
 
     @Test
     fun `課名在冒號處截短_括號不動`() {
-        // 冒號後面通常是副標，格子裡本來就放不下
-        assertEquals("社會關懷", shortName("社會關懷：非營利組織的服務學習"))
-        assertEquals("健康促進", shortName("健康促進:自我健康管理"))
+        // 通識課的全名是「分類：課名」，冒號**前面**是分類。取前面那段的話，
+        // 同一個分類的幾門課在課表上都叫同一個名字，分不出哪一堂
+        assertEquals("社區服務學習", shortName("社會關懷：社區服務學習"))
+        assertEquals("音樂欣賞", shortName("通識:音樂欣賞"))
         // （一）是用來分班的，砍掉會認錯課
         assertEquals("微積分（一）", shortName("微積分（一）"))
-        assertEquals("光電與材料實驗（一）", shortName("光電與材料實驗（一）"))
+        assertEquals("普通化學實驗（一）", shortName("普通化學實驗（一）"))
         // 冒號在頭尾的怪名字不要砍成空字串
         assertEquals("：開頭", shortName("：開頭"))
         assertEquals("結尾：", shortName("結尾："))
         assertEquals("", shortName(""))
+    }
+
+    @Test
+    fun `有工作區資料夾名就用它_只限帶分類的課名`() {
+        fun course(name: String, folder: String) =
+            Course("x", name, 0, 1, 1, "", "", "", folder = folder)
+        // 伺服器對過的資料夾名（人手取的短名）優先：跟課程頁的清單同一個名字
+        assertEquals("天文學", shortName(course("通識：生活中的天文學", "天文學")))
+        assertEquals("音樂欣賞", shortName(course("通識：音樂欣賞與創作", "音樂欣賞")))
+        // 沒有冒號的課名照原樣——「微積分（一）」比資料夾名「微積分一」好讀
+        assertEquals("微積分（一）", shortName(course("微積分（一）", "微積分一")))
+        // 舊資料還沒寫回資料夾名：取冒號後面
+        assertEquals("生活中的天文學", shortName(course("通識：生活中的天文學", "")))
     }
 
     private val periods = listOf(

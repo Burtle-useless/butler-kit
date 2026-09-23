@@ -183,10 +183,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 所以只有這個 process 的第一次要跳過。
                 val since = if (coldStart) -1L else prefs.lastSeq
                 coldStart = false
+                _state.update { it.copy(connecting = true) }
                 streamOnCurrentNet(since)
             }
             if (!isActive) break
-            _state.update { it.copy(connected = false, pet = PetMood.Offline) }
+            _state.update { it.copy(connected = false, connecting = false, pet = PetMood.Offline) }
             Log.w(ButlerClient.TAG, "連線中斷，${backoffMs}ms 後重試（網路一恢復就提早）")
             // 退避等待可以被網路訊號打斷：出電梯、切回 Wi-Fi 的那一刻就該重連，
             // 不是把剩下的秒數睡完——網路一回來就該重連，而不是等倒數走完
@@ -217,6 +218,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     _state.update {
                         it.copy(
                             connected = wire.connected,
+                            connecting = false,
                             connError = wire.error,
                             pet = if (wire.connected) PetMood.Idle else PetMood.Offline,
                         )
@@ -708,25 +710,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── 分頁 ─────────────────────────────────────────────────────────────
-    // 助理頁與 cc-bot 頁看的是同一條事件流的不同對話：助理頁永遠是 DEFAULT_CONV，
-    // cc-bot 頁是使用者上次選的那個。分頁切換時把 currentConv 換過去就好，
+    // 助理頁與工作頁看的是同一條事件流的不同對話：助理頁永遠是 DEFAULT_CONV，
+    // 工作頁是使用者上次選的那個。分頁切換時把 currentConv 換過去就好，
     // 不需要兩套狀態——itemsByConv 本來就是以 conv_id 為 key 的多對話結構。
 
-    /** cc-bot 頁上次看的對話。null＝還沒選過（該頁顯示空狀態）。 */
+    /** 工作頁上次看的對話。null＝還沒選過（該頁顯示空狀態）。 */
     private var ccConv: String? = null
 
     fun enterQiTab() {
-        // pendingNew 也要一併退掉：那是 cc-bot 頁的待建立狀態，
-        // 帶進助理頁會讓助理的訊息跑去開一條新的 cc-bot 對話
+        // pendingNew 也要一併退掉：那是工作頁的待建立狀態，
+        // 帶進助理頁會讓助理的訊息跑去開一條新的工作對話
         val s = _state.value
         markRead(DEFAULT_CONV)
         if (s.currentConv != DEFAULT_CONV || s.pendingNew) switchConversation(DEFAULT_CONV)
+        // 已經停在助理這條（冷啟動一定是）時上面那行不會跑，歷史要自己拉。不拉的話要等
+        // 事件流接通才拉，而那條經過 Cloudflare 這類通道可能等十幾秒；工作頁一點進去就走
+        // switchConversation 直接拉，看起來就成了「工作頁正常、助理頁空白」
+        else if (needsSnapshot(DEFAULT_CONV)) loadSnapshot(DEFAULT_CONV)
     }
 
     fun enterCcTab() {
         if (_state.value.pendingNew) return   // 正在開新對話，別把它切走
         // 沒選過就挑清單第一個（排除助理的專屬對話）；一個都沒有就維持原樣，
-        // 由畫面顯示「還沒有對話」而不是誤把別人的內容當成 cc-bot 的
+        // 由畫面顯示「還沒有對話」而不是誤把別人的內容當成工作頁的
         val target = ccConv
             ?: _state.value.conversations
                 .firstOrNull { isCcConv(it.id) }?.id
@@ -846,7 +852,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         refreshConversations()
                         deliver(id, body, files)
                     }
-                    .onFailure { e -> reportSendFailure(_state.value.currentConv, e) }
+                    .onFailure { e -> reportSendFailure(_state.value.currentConv, e, body, files) }
             }
             return
         }
@@ -865,11 +871,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         busySinceByConv[conv] = _state.value.busySince
         viewModelScope.launch {
             client.sendMessage(conv, text, files)
-                .onFailure { e -> reportSendFailure(conv, e) }
+                .onFailure { e -> reportSendFailure(conv, e, text, files) }
         }
     }
 
-    private fun reportSendFailure(conv: String, e: Throwable) {
+    /**
+     * 送出失敗：把原文與附件放回輸入框。
+     *
+     * 按下送出時輸入框與附件列就清空了，失敗只剩一行「送出失敗」，
+     * 打的字與選好的檔案都沒了，只能重打。只在那條對話的輸入框還是空的時候放回去——
+     * 失敗通知回來之前他可能已經在打下一句，不能蓋掉。
+     */
+    private fun restoreUnsent(conv: String, text: String, files: List<Attachment>) {
+        if (text.isNotBlank() && draftByConv[conv].isNullOrEmpty()) {
+            draftByConv[conv] = text
+            prefs.drafts = draftByConv.toMap()
+            if (_state.value.currentConv == conv) _state.update { it.copy(draft = text) }
+        }
+        if (files.isNotEmpty() && _state.value.currentConv == conv &&
+            _state.value.attachments.isEmpty()
+        ) {
+            _state.update { it.copy(attachments = files) }
+        }
+    }
+
+    private fun reportSendFailure(
+        conv: String, e: Throwable,
+        text: String = "", files: List<Attachment> = emptyList(),
+    ) {
+        restoreUnsent(conv, text, files)
         val err = TraceItem.ErrorItem(
             conv, "SEND_FAILED", e.message ?: "送出失敗", System.currentTimeMillis(),
         )
@@ -975,7 +1005,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun setCwd(path: String): Result<Unit> = client.setCwd(_state.value.currentConv, path)
 
     /**
-     * 只改這一條對話的模型／思考強度（等同 cc-bot 的 /model_session、/effort_session）。
+     * 只改這一條對話的模型／思考強度（對話層級的覆寫，不動帳號預設）。
      * 空字串＝清除覆寫、回到跟隨帳號預設。
      *
      * 成功後重拉 snapshot 而不是本地推算：伺服器會 drop client 讓下回合重建，

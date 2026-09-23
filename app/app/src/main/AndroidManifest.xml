@@ -165,7 +165,8 @@
              三張都不連網——widget 只有幾秒可以出畫面，來不及等 HTTP。 -->
         <receiver
             android:name=".widget.CourseWidgetReceiver"
-            android:exported="false">
+            android:exported="false"
+            android:label="@string/widget_course_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -176,7 +177,8 @@
 
         <receiver
             android:name=".widget.TodayWidgetReceiver"
-            android:exported="false">
+            android:exported="false"
+            android:label="@string/widget_today_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -187,7 +189,8 @@
 
         <receiver
             android:name=".widget.UsageWidgetReceiver"
-            android:exported="false">
+            android:exported="false"
+            android:label="@string/widget_usage_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>

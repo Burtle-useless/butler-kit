@@ -13,6 +13,7 @@ import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.parseAgenda
 import dev.butlerkit.app.notify.AppForeground
 import dev.butlerkit.app.notify.ButlerService
+import dev.butlerkit.app.ui.gridPeriods
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,6 +49,19 @@ import java.time.ZoneId
 object WidgetTick {
 
     private const val REQ = 0x7115
+    private const val REQ_PROGRESS = 0x7116
+
+    /**
+     * 上課中與上課前一小時，課表 widget 每幾分鐘重畫一次。
+     *
+     * 課表 widget 有「上課中那堂用色塊按比例填到上到哪」與「下一堂幾分後開始」，
+     * 兩個都跟著分鐘走；只在節次交界重畫的話，色塊會停在開始那一刻、倒數停在一小時前。
+     * 五分鐘一格：一堂 100 分鐘的課每格走 5%，眼睛看得出在動，一天也才幾十次。
+     */
+    internal const val PROGRESS_STEP_MIN = 5
+
+    /** 這一發是跟著分鐘走的那種（不是節次交界）。 */
+    const val EXTRA_PROGRESS = "progress"
 
     /** 算出下一個邊界並排上去。資料變動或前一個 tick 響完都要重新呼叫。 */
     fun reschedule(ctx: Context) {
@@ -64,12 +78,63 @@ object WidgetTick {
             else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, op)
         }.onFailure { Log.w(ButlerClient.TAG, "widget 排重畫失敗：${it.message}") }
         Log.i(ButlerClient.TAG, "widget 下次重畫 at=$at exact=$exact")
+        scheduleProgress(ctx, data, am, exact)
+    }
+
+    /**
+     * 跟著分鐘走的那一發，跟上面的節次交界**分開排**（各自一個 PendingIntent）。
+     *
+     * **不喚醒手機**（`RTC` 不是 `RTC_WAKEUP`）：螢幕關著沒人在看 widget，為了畫一條
+     * 沒人看的色塊把手機叫醒是浪費。錯過的 RTC 鬧鐘會在下次亮螢幕時立刻補發，
+     * 所以一拿起手機看到的就是當下的進度。節次交界那一發照舊會喚醒——跨日、看門狗
+     * 都靠它，這裡不能跟它共用同一個鬧鐘。
+     */
+    private fun scheduleProgress(ctx: Context, data: AgendaData, am: AlarmManager, exact: Boolean) {
+        val op = pendingProgress(ctx)
+        val date = LocalDate.now()
+        val nowMin = LocalTime.now().let { it.hour * 60 + it.minute }
+        val next = progressMarks(data, date.dayOfWeek.value - 1).firstOrNull { it > nowMin }
+        if (next == null) {
+            am.cancel(op)
+            return
+        }
+        val at = date.atStartOfDay(ZoneId.systemDefault()).plusMinutes(next.toLong())
+            .toInstant().toEpochMilli()
+        runCatching {
+            if (exact) am.setExact(AlarmManager.RTC, at, op) else am.set(AlarmManager.RTC, at, op)
+        }.onFailure { Log.w(ButlerClient.TAG, "widget 排進度重畫失敗：${it.message}") }
     }
 
     private fun pending(ctx: Context): PendingIntent = PendingIntent.getBroadcast(
         ctx, REQ, Intent(ctx, WidgetTickReceiver::class.java),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
+
+    private fun pendingProgress(ctx: Context): PendingIntent = PendingIntent.getBroadcast(
+        ctx, REQ_PROGRESS,
+        Intent(ctx, WidgetTickReceiver::class.java).putExtra(EXTRA_PROGRESS, true),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    /**
+     * 今天哪些時刻（當天第幾分鐘）要為了色塊與倒數重畫：每堂課上課中每 [PROGRESS_STEP_MIN]
+     * 分鐘一次，外加上課前一小時內每 [PROGRESS_STEP_MIN] 分鐘一次（「25 分後開始」）。
+     * 節次的起訖本身不在這裡——那是 [nextBoundary] 的事。
+     */
+    internal fun progressMarks(data: AgendaData, todayIdx: Int): java.util.SortedSet<Int> {
+        val marks = sortedSetOf<Int>()
+        val pStart = data.periods.associate { it.no to hhmm(it.start) }
+        val pEnd = data.periods.associate { it.no to hhmm(it.end) }
+        data.courses.filter { it.day == todayIdx }.forEach { c ->
+            val s = pStart[c.fromPeriod] ?: return@forEach
+            val e = pEnd[c.toPeriod] ?: return@forEach
+            var m = s + PROGRESS_STEP_MIN
+            while (m < e) { marks += m; m += PROGRESS_STEP_MIN }
+            var k = s - 60
+            while (k < s) { if (k > 0) marks += k; k += PROGRESS_STEP_MIN }
+        }
+        return marks
+    }
 
     /**
      * 下一個會讓畫面長得不一樣的時刻（epoch 毫秒）。
@@ -90,6 +155,16 @@ object WidgetTick {
         data.courses.filter { it.day == today }.forEach { c ->
             pStart[c.fromPeriod]?.let { marks += it }
             pEnd[c.toPeriod]?.let { marks += it }
+        }
+        // 課表 widget 拉大成整週時，節次軸標的是「現在第幾節」——每一節的起訖都是
+        // 畫面會變的時刻，不只今天有課的那幾節。只算網格實際畫出來的節次範圍
+        // （跟 CourseWidget 用同一支 gridPeriods），一天十來個點，仍是事件驅動不是輪詢
+        if (data.courses.isNotEmpty()) {
+            val range = gridPeriods(data.courses, data.periods.maxOfOrNull { it.no } ?: 0)
+            data.periods.filter { it.no in range }.forEach { p ->
+                pStart[p.no]?.let { marks += it }
+                pEnd[p.no]?.let { marks += it }
+            }
         }
         data.events.filter { it.start.startsWith(todayStr) }.forEach { e ->
             hhmm(e.start.substringAfter('T', ""))?.let {
@@ -124,14 +199,16 @@ class WidgetTickReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         val pending = goAsync()
         val app = ctx.applicationContext
-        if (!AppForeground.visible && Prefs(app).isConfigured()) ButlerService.start(app)
+        // 跟著分鐘走的那一發只重畫課表：五分鐘一次，不值得每次都戳服務、拉一趟額度
+        val progressOnly = intent.getBooleanExtra(WidgetTick.EXTRA_PROGRESS, false)
+        if (!progressOnly && !AppForeground.visible && Prefs(app).isConfigured()) ButlerService.start(app)
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 Widgets.refreshAgenda(app)
                 WidgetTick.reschedule(app)
                 // 額度沒有人會通知我們，只能自己問。邊界醒來時順手拉一次，
                 // 讓桌面上的百分比至少跟上「今天上完課」這種尺度的時間感
-                UsageWorker.runOnce(app)
+                if (!progressOnly) UsageWorker.runOnce(app)
             } finally {
                 pending.finish()
             }

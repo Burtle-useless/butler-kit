@@ -172,6 +172,20 @@ sealed interface TraceItem {
         val text: String,
         val atMs: Long = 0L,
     ) : TraceItem
+
+    /**
+     * 這條對話換了一段新的 session（助理每天、課程每週，伺服器 engine/rotation.py）。
+     *
+     * 畫成一條分隔線：線以上的事，模型要回頭翻紀錄才想得起來。沒有這條線的話，
+     * 人會以為它應該記得昨天講過的東西。即時的來自 `session.rotated` 事件，
+     * 歷史的是伺服器在兩段逐字稿之間補的那一則（role=system、kind=rotate）。
+     * [atMs] 是上一段最後一則的時間——往前翻頁拿它當游標也不會漏掉那則。
+     */
+    data class SessionBreak(
+        override val turnId: String,
+        val text: String,
+        val atMs: Long = 0L,
+    ) : TraceItem
 }
 
 /** 這一列的時刻（epoch 毫秒）；沒有時間概念的列（工具、思考、卡片）一律 0。 */
@@ -180,6 +194,7 @@ val TraceItem.atMs: Long
         is TraceItem.UserMsg -> atMs
         is TraceItem.Reply -> atMs
         is TraceItem.WakeNote -> atMs
+        is TraceItem.SessionBreak -> atMs
         is TraceItem.ErrorItem -> atMs
         else -> 0L
     }
@@ -323,6 +338,11 @@ data class ChatState(
     val busySince: Long = 0L,
     val connected: Boolean = false,
     val connError: String? = null,
+    /**
+     * 正在連、成敗都還沒有回音。一開 App 就是這個狀態——以前這段期間照樣寫紅字
+     * 「斷線」，看起來像根本沒在連。
+     */
+    val connecting: Boolean = true,
     val lastSeq: Long = -1L,
     /** 桌寵心情：跟著真實事件流走，不是裝飾。 */
     val pet: PetMood = PetMood.Offline,

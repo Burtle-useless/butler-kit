@@ -270,6 +270,13 @@ object TrailReducer {
 
             "bg.state" -> n = n.copy(bgTasks = ev.bgTasks("tasks"))
 
+            // 換了一段新的 session：對話裡畫一條分隔線（見 TraceItem.SessionBreak）
+            "session.rotated" -> append(
+                TraceItem.SessionBreak(
+                    ev.turnId, ev.str("note").ifBlank { "換了一段新的 session" }, ev.atMs,
+                ),
+            )
+
             // 離線太久，補的起點被 ring buffer 擠掉了：歷史補得回來（snapshot 讀逐字稿）
             "seq.gap" -> fx += Effect.Reload
         }
@@ -282,7 +289,8 @@ object TrailReducer {
      * 每則的還原規則：
      *  - user → UserMsg。
      *  - system → WakeNote：那是伺服器補的脈絡行（「背景工作『…』完成，助理接手」），
-     *    不是助理說的話，畫成頭像氣泡會像它憑空講了一句。
+     *    不是助理說的話，畫成頭像氣泡會像它憑空講了一句。kind=rotate 的是換 session 的
+     *    分隔線（SessionBreak）。
      *  - 其餘（assistant）→ 思考、工具、回覆、未答的選項，**照這個順序**：串流當下
      *    就是先看到 💭、再看到工具、最後才是話，歷史長得不一樣的話捲回去會覺得是
      *    另一段對話。回覆走 [replyOrNull]：只有 [[DONE]] 的空回覆不還原，否則重開
@@ -327,7 +335,11 @@ object TrailReducer {
                     }
                     out += TraceItem.UserMsg(convId, m.text, atMs = m.atMs)
                 }
-                "system" -> out += TraceItem.WakeNote(convId, m.text, m.atMs)
+                "system" -> out += if (m.kind == "rotate") {
+                    TraceItem.SessionBreak(convId, m.text, m.atMs)
+                } else {
+                    TraceItem.WakeNote(convId, m.text, m.atMs)
+                }
                 else -> {
                     m.think.takeIf { it.isNotBlank() }
                         ?.let { out += TraceItem.Thinking(convId, it) }

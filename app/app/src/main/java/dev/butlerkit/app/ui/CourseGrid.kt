@@ -156,7 +156,21 @@ private val MAX_COL_W = 76.dp
  */
 internal fun shortName(name: String): String {
     val cut = name.indexOfFirst { it == '：' || it == ':' }
-    return if (cut in 2 until name.length - 1) name.take(cut) else name
+    return if (cut in 2 until name.length - 1) name.substring(cut + 1).trim() else name
+}
+
+/**
+ * 格子與 widget 上的課名。
+ *
+ * 通識課的全名是「分類：課名」（「通識：生活中的天文學」）。取冒號**前面**的話，
+ * 同一個分類底下的幾門課在課表上都叫同一個名字，分不出是哪一堂。
+ * 所以取冒號後面；伺服器對過工作區資料夾的（`folder`，「天文學」「服務學習」這種
+ * 人手取的短名）優先用它——跟課程頁的課程清單同一個名字。沒有冒號的課名照原樣，
+ * 「微積分（一）」比資料夾名「微積分一」好讀。
+ */
+internal fun shortName(c: Course): String {
+    val hasCategory = c.name.indexOfFirst { it == '：' || it == ':' } in 2 until c.name.length - 1
+    return if (hasCategory && c.folder.isNotBlank()) c.folder else shortName(c.name)
 }
 
 @Composable
@@ -250,7 +264,7 @@ private fun SlotCell(
     ) {
         Column {
             Text(
-                shortName(c.name),
+                shortName(c),
                 color = Palette.Text, fontSize = Type.Tiny, lineHeight = Type.TinyLine,
                 fontWeight = FontWeight.Medium,
                 maxLines = if (slot.span > 1) 3 else 2,

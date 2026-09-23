@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,15 +22,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -51,6 +55,9 @@ import dev.butlerkit.app.net.CourseDetail as CourseDetailData
 import dev.butlerkit.app.net.CourseFile
 import dev.butlerkit.app.net.CourseInfo
 import dev.butlerkit.app.net.Period
+import dev.butlerkit.app.net.SemesterInfo
+import dev.butlerkit.app.net.SemesterResult
+import dev.butlerkit.app.net.humanError
 import dev.butlerkit.app.net.orderedFields
 import kotlinx.coroutines.launch
 import java.io.File
@@ -149,8 +156,115 @@ private fun CourseHome(
                     }
                 }
             },
+            // 換學期：一學期用一次的東西，放在整頁最底下
+            tail = { item { SemesterRow(vm) } },
         )
     }
+}
+
+/**
+ * 最底下一列：現在是哪學期＋「換學期…」。換學期要搬資料夾、收對話、清課表，
+ * 所以按下去先開確認面板，面板上講清楚會發生什麼。
+ */
+@Composable
+private fun SemesterRow(vm: ChatViewModel) {
+    val ctx = LocalContext.current
+    var info by remember { mutableStateOf<SemesterInfo?>(null) }
+    var open by remember { mutableStateOf(false) }
+    // 進頁、打開面板、換完各拉一次：換完不重拉的話這一列還寫著舊學期
+    var reload by remember { mutableStateOf(0) }
+    LaunchedEffect(reload) { vm.client.getSemester().onSuccess { info = it } }
+    val cur = info?.current.orEmpty()
+    Row(
+        Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (cur.isBlank()) "這學期" else "$cur 學期",
+            color = Palette.TextFaint, fontSize = Type.Meta, modifier = Modifier.weight(1f),
+        )
+        Text(
+            "換學期…", color = Palette.TextDim, fontSize = Type.Meta,
+            modifier = Modifier.clip(Radii.Chip)
+                .border(1.dp, Palette.Line, Radii.Chip)
+                .clickable(role = Role.Button) { open = true; reload++ }
+                .padding(horizontal = 14.dp, vertical = 7.dp),
+        )
+    }
+    val i = info
+    if (open && i != null) {
+        SemesterDialog(i, vm, onDismiss = { open = false }) { r ->
+            open = false
+            reload++
+            Toast.makeText(
+                ctx,
+                "${r.archived} 收起來了（${r.moved.size} 門課），課表清空；新課加進來會自動開工作區",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+}
+
+/** 換學期的確認：講清楚會發生什麼、下學期叫什麼（可改），按了才動。 */
+@Composable
+private fun SemesterDialog(
+    info: SemesterInfo,
+    vm: ChatViewModel,
+    onDismiss: () -> Unit,
+    onDone: (SemesterResult) -> Unit,
+) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var next by remember { mutableStateOf(info.next) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        containerColor = Palette.Surface,
+        title = {
+            Text("換學期", fontSize = Type.Title, fontWeight = FontWeight.SemiBold, color = Palette.Text)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "把 ${info.current} 收起來：${info.folders.size} 門課的資料夾與課表搬進封存" +
+                        "（紀錄一筆都不刪），課程對話一起收起來，課表清空。" +
+                        "新學期的課加進課表，會自動開新的工作區。",
+                    color = Palette.TextDim, fontSize = Type.Meta, lineHeight = Type.MetaLine,
+                )
+                Text("下學期叫", color = Palette.TextFaint, fontSize = Type.Tiny)
+                Field(next, "115-2") { next = it.trim() }
+                error?.let {
+                    Text(it, color = Palette.Danger, fontSize = Type.Meta, lineHeight = Type.MetaLine)
+                }
+            }
+        },
+        confirmButton = {
+            ActionButton(
+                "換到 ${next.ifBlank { "…" }}", enabled = next.isNotBlank() && !busy,
+                tint = Palette.Danger, loading = busy, modifier = Modifier,
+                pad = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+            ) {
+                busy = true
+                error = null
+                scope.launch {
+                    vm.client.switchSemester(next)
+                        .onSuccess { r ->
+                            CoursesRepo.refresh(ctx, vm.client)
+                            AgendaRepo.refresh(ctx, vm.client)
+                            onDone(r)
+                        }
+                        .onFailure { error = it.message ?: humanError(it) }
+                    busy = false
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("先不要", color = Palette.TextDim)
+            }
+        },
+    )
 }
 
 /**

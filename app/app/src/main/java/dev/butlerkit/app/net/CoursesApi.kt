@@ -3,6 +3,7 @@ package dev.butlerkit.app.net
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
+import org.json.JSONObject
 import java.io.OutputStream
 import java.net.URLEncoder
 
@@ -18,6 +19,15 @@ interface CoursesApi {
 
     /** 把一份教材原檔抓下來寫進 [out]。[path] 是清單給的相對路徑。回寫入的位元組數。 */
     suspend fun downloadCourseFile(name: String, path: String, out: OutputStream): Result<Long>
+
+    /** 換學期面板要的東西：現在是哪學期、換過去叫什麼、會搬哪幾門。 */
+    suspend fun getSemester(): Result<SemesterInfo>
+
+    /**
+     * 換學期（伺服器 courses/semester.py）：這學期的資料夾與課表收進封存、
+     * 課程對話收起來、課表清空。[next] 是下學期的代號（「115-2」）。
+     */
+    suspend fun switchSemester(next: String): Result<SemesterResult>
 }
 
 internal class CoursesApiImpl(core: ClientCore) : CoursesApi, ClientCore by core {
@@ -38,6 +48,12 @@ internal class CoursesApiImpl(core: ClientCore) : CoursesApi, ClientCore by core
     }
 
     override suspend fun getCoursesRaw(): Result<String> = text("${prefs.baseUrl}/v1/courses")
+
+    override suspend fun getSemester(): Result<SemesterInfo> =
+        getJson("/v1/courses/semester").map(::parseSemesterInfo)
+
+    override suspend fun switchSemester(next: String): Result<SemesterResult> =
+        postJson("/v1/courses/semester", JSONObject().put("next", next)).map(::parseSemesterResult)
 
     override suspend fun getCourseRaw(name: String): Result<String> =
         text("${prefs.baseUrl}/v1/courses/${seg(name)}")

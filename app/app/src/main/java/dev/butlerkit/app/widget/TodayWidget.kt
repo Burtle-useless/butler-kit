@@ -1,5 +1,8 @@
 package dev.butlerkit.app.widget
 
+import androidx.glance.appwidget.SizeMode
+import androidx.glance.LocalSize
+import androidx.compose.ui.unit.Dp
 import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -40,6 +43,10 @@ import java.time.LocalTime
  * 混在一起排時間會讓人分不出哪一條真的會響。
  */
 class TodayWidget : GlanceAppWidget() {
+
+    /** 要實際高度算放得下幾列（理由同 CourseWidget）；空出來的列拿去放「接下來」。 */
+    override val sizeMode: SizeMode = SizeMode.Exact
+
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val prefs = Prefs(context)
         provideContent {
@@ -47,7 +54,7 @@ class TodayWidget : GlanceAppWidget() {
             val raw by remember { prefs.watch(Prefs.KEY_AGENDA) }
                 .collectAsState(initial = prefs.agendaCache)
             val data = remember(raw) { parseAgenda(raw) ?: AgendaData() }
-            Content(context, data)
+            Content(context, data, LocalSize.current.height)
         }
     }
 }
@@ -62,8 +69,18 @@ class TodayWidgetReceiver : GlanceAppWidgetReceiver() {
  */
 private const val MAX_ROWS = 8
 
+/** 一件行程一列的高度（左邊那條 28dp 的色條加上下 padding），用來從 widget 高度反推放得下幾列。 */
+private val EVENT_ROW_H = 35.dp
+
+/** 外框（標題列與上下 padding）加底下那行鬧鐘吃掉的高度。 */
+private val TODAY_OVERHEAD = 84.dp
+
+/** 放得下幾列（至少兩列）。 */
+internal fun todayRows(height: Dp): Int =
+    ((height - TODAY_OVERHEAD) / EVENT_ROW_H).toInt().coerceIn(2, MAX_ROWS)
+
 @Composable
-private fun Content(ctx: Context, data: AgendaData) {
+private fun Content(ctx: Context, data: AgendaData, height: Dp) {
     val today = LocalDate.now().toString()          // "2026-08-20"
     val nowMin = LocalTime.now().let { it.hour * 60 + it.minute }
 
@@ -81,6 +98,7 @@ private fun Content(ctx: Context, data: AgendaData) {
 
     WidgetFrame(ctx, "今天", head, TAB_DAILY, SUB_CAL) {
         Column(modifier = GlanceModifier.defaultWeight()) {
+            val rows = todayRows(height)
             if (events.isEmpty()) {
                 EmptyLine("今天沒安排")
             } else {
@@ -90,14 +108,21 @@ private fun Content(ctx: Context, data: AgendaData) {
                 // 新增看得到、刪除看不到，而且完全沒有錯誤可查。攤平成幾個 Row 就正常。
                 //
                 // 攤平之後換這層要守 GLANCE_MAX_CHILDREN，所以有 MAX_ROWS 上限。
-                events.take(MAX_ROWS).forEach { EventRow(it, nowMin) }
-                if (events.size > MAX_ROWS) {
+                events.take(rows).forEach { EventRow(it, nowMin) }
+                if (events.size > rows) {
                     Text(
-                        text = "還有 ${events.size - MAX_ROWS} 件",
+                        text = "還有 ${events.size - rows} 件",
                         style = TextStyle(fontSize = 10.sp, color = W.Faint),
                         modifier = GlanceModifier.padding(top = 2.dp),
                     )
                 }
+            }
+            // 今天的事少、底下還空著兩列以上：接著列之後幾天的。一整片空白的 widget
+            // 看起來像壞掉，而「明天有什麼」正是看完今天之後接著想知道的
+            val room = rows - events.size.coerceAtMost(rows) - (if (events.isEmpty()) 1 else 0)
+            if (room >= 2) {
+                val later = upcomingEvents(data.events, LocalDate.now(), room - 1)
+                if (later.isNotEmpty()) UpcomingBlock(later)
             }
         }
         if (alarm != null) {
@@ -215,4 +240,44 @@ internal fun nextAlarm(
         else -> "$dayOff 天後 "
     }
     return a to "$prefix${a.time}"
+}
+
+/** 今天之後、還沒做完的行程，由近到遠取前 [limit] 件。 */
+internal fun upcomingEvents(events: List<CalEvent>, today: LocalDate, limit: Int): List<CalEvent> {
+    val t = today.toString()
+    return events.filter { !it.done && it.start.take(10) > t }
+        .sortedBy { it.start }
+        .take(limit.coerceAtLeast(0))
+}
+
+/** 「明天」「週五」「10/3」。一週內講星期幾，再遠直接給日期。 */
+internal fun eventDayLabel(start: String, today: LocalDate): String {
+    val d = runCatching { LocalDate.parse(start.take(10)) }.getOrNull() ?: return ""
+    val gap = d.toEpochDay() - today.toEpochDay()
+    return when {
+        gap == 1L -> "明天"
+        gap in 2..6 -> "週" + "一二三四五六日"[d.dayOfWeek.value - 1]
+        else -> "${d.monthValue}/${d.dayOfMonth}"
+    }
+}
+
+/** 「接下來」：之後幾天的行程，一件一行（哪天、幾點、什麼事）。 */
+@Composable
+private fun UpcomingBlock(list: List<CalEvent>) {
+    val today = LocalDate.now()
+    Column(modifier = GlanceModifier.padding(top = 8.dp, start = 6.dp)) {
+        Text(
+            text = "接下來",
+            style = TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Bold, color = W.Faint),
+        )
+        list.forEach { e ->
+            val time = e.start.substringAfter('T', "").take(5)
+            Text(
+                text = "${eventDayLabel(e.start, today)} $time  ${e.title}",
+                maxLines = 1,
+                style = TextStyle(fontSize = 11.sp, color = W.Dim),
+                modifier = GlanceModifier.padding(top = 2.dp),
+            )
+        }
+    }
 }

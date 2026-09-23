@@ -151,3 +151,38 @@ fun parseCourseDetail(text: String): CourseDetail? = runCatching {
         },
     )
 }.getOrNull()
+
+/** 換學期面板：[current] 這學期、[next] 預設的下一個、[folders] 會被收起來的課、[archived] 封存過的學期。 */
+data class SemesterInfo(
+    val current: String,
+    val next: String,
+    val folders: List<String>,
+    val archived: List<String>,
+)
+
+/** 換完的結果：收了哪學期、換成哪學期、搬了哪幾門、收掉幾條課程對話、封存在哪。 */
+data class SemesterResult(
+    val archived: String,
+    val next: String,
+    val moved: List<String>,
+    val conversations: Int,
+    val dest: String,
+)
+
+private fun JSONObject.strings(key: String): List<String> =
+    optJSONArray(key)?.let { a -> List(a.length()) { a.optString(it) } }.orEmpty()
+
+fun parseSemesterInfo(o: JSONObject) = SemesterInfo(
+    current = o.optString("current"),
+    next = o.optString("next"),
+    folders = o.strings("folders"),
+    archived = o.strings("archived"),
+)
+
+fun parseSemesterResult(o: JSONObject) = SemesterResult(
+    archived = o.optString("archived"),
+    next = o.optString("next"),
+    moved = o.strings("moved"),
+    conversations = o.optInt("conversations"),
+    dest = o.optString("dest"),
+)

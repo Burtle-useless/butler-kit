@@ -7,4 +7,8 @@
     <string name="widget_course_desc">今天的課，標出正在上的那一節</string>
     <string name="widget_today_desc">今天的行程與下一個鬧鐘</string>
     <string name="widget_usage_desc">訂閱額度還剩多少、多久重置</string>
+    <!-- widget 清單裡的名字。不給的話三張都叫 App 名，挑的時候分不出來 -->
+    <string name="widget_course_label">課表</string>
+    <string name="widget_today_label">今天</string>
+    <string name="widget_usage_label">用量</string>
 </resources>

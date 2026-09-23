@@ -280,6 +280,8 @@ internal fun TraceRow(
         }
     }
 
+    is TraceItem.SessionBreak -> SessionBreakRow(item.text)
+
     // 助理自己醒來的那一輪：一行小字交代為什麼突然又開口，不裝盒子、不帶頭像——
     // 它不是誰說的話，只是回覆前面的脈絡
     is TraceItem.WakeNote -> Text(
@@ -287,6 +289,25 @@ internal fun TraceRow(
         color = Palette.TextFaint, fontSize = Type.Tiny, lineHeight = Type.TinyLine,
         modifier = Modifier.fillMaxWidth().padding(start = AvatarW, top = 10.dp, bottom = 2.dp),
     )
+}
+
+/**
+ * 換 session 的分隔線：兩條細線夾一行小字，置中。
+ *
+ * 跟跨日的日期（[DaySeparator]，只有字）刻意長得不一樣：日期只是換了一天，
+ * 這條線說的是「線以上的事它要翻紀錄才想得起來」。
+ */
+@Composable
+internal fun SessionBreakRow(text: String) = Row(
+    Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    Box(Modifier.weight(1f).height(1.dp).background(Palette.Line))
+    Text(
+        text, color = Palette.TextFaint, fontSize = Type.Tiny, lineHeight = Type.TinyLine,
+        modifier = Modifier.padding(horizontal = 10.dp),
+    )
+    Box(Modifier.weight(1f).height(1.dp).background(Palette.Line))
 }
 
 /**
@@ -382,7 +403,7 @@ private fun StageRow(s: TraceItem.Stage) {
                     .padding(top = 2.dp),
             ) {
                 Text(
-                    "${c.icon} ${c.tool}  ${c.summary}",
+                    "${c.icon} ${toolLabel(c.tool)}  ${c.summary}",
                     color = Palette.TextFaint,
                     fontSize = Type.Tiny,
                     fontFamily = FontFamily.Monospace,
@@ -616,3 +637,10 @@ private fun StatusHead(state: ChatState) = Row(
         maxLines = 1,
     )
 }
+
+/**
+ * 工具名給人看的樣子：MCP 工具是 `mcp__伺服器__動作`，只留動作
+ * （`mcp__agenda__event_list` → `event_list`）——前面那段是給 CLI 分辨來源的。
+ */
+internal fun toolLabel(name: String): String =
+    if (name.startsWith("mcp__")) name.removePrefix("mcp__").substringAfter("__").ifBlank { name } else name

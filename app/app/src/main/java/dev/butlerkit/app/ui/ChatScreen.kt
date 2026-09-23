@@ -1,6 +1,7 @@
 package dev.butlerkit.app.ui
 
 import android.net.Uri
+import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
@@ -11,6 +12,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +39,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -58,13 +62,23 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import dev.butlerkit.app.net.ButlerClient
+import kotlin.math.abs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -350,10 +364,107 @@ fun ChatScreen(
                     )
                 }
             },
-            content = body,
+            // 程式碼區塊這種會橫捲的東西捲到最左邊之後，再往右滑也要開得了抽屜
+            content = { Box(Modifier.nestedScroll(rememberDrawerHandoff(drawerState))) { body() } },
         )
     } else {
         body()
+    }
+}
+
+/**
+ * 會橫捲的東西（程式碼區塊、工具列）已經在最左邊時，再往右滑就交給抽屜。
+ *
+ * 抽屜自己的拖曳只拿得到「沒有人要」的手勢；會橫捲的子元件就算已經捲到頭、根本捲不動，
+ * 照樣把整個手勢吃掉，在它們上面右滑就開不了抽屜。子元件捲不動的那部分會經由
+ * nested scroll 往上交，這裡接住，累積過一段距離就開抽屜。
+ *
+ * 同一個手勢裡子元件只要真的捲過，就不交出去：把程式碼捲回開頭時順勢衝過頭，
+ * 不該一路把抽屜也拉出來。
+ */
+@Composable
+private fun rememberDrawerHandoff(drawer: DrawerState): NestedScrollConnection {
+    val scope = rememberCoroutineScope()
+    val threshold = with(LocalDensity.current) { 56.dp.toPx() }
+    return remember(drawer, threshold) {
+        object : NestedScrollConnection {
+            private var childMoved = false
+            private var pulled = 0f
+            private var fired = false
+            private var lastAt = 0L
+
+            override fun onPostScroll(
+                consumed: Offset, available: Offset, source: NestedScrollSource,
+            ): Offset {
+                if (source != NestedScrollSource.UserInput) return Offset.Zero
+                // 手勢的起點 nested scroll 不會通知；隔一小段沒有動靜就當成新的一滑
+                val now = SystemClock.uptimeMillis()
+                if (now - lastAt > 250) reset()
+                lastAt = now
+                if (consumed.x != 0f) childMoved = true
+                // 這一滑子元件捲過、往左滑、或抽屜本來就開著：不插手，讓它照常回彈
+                if (childMoved || available.x <= 0f || (!fired && !drawer.isClosed)) return Offset.Zero
+                pulled += available.x
+                if (!fired && pulled > threshold) {
+                    fired = true
+                    scope.launch { drawer.open() }
+                }
+                // 剩下的位移由這裡吃掉。不吃的話，會捲的子元件拉到頭之後，Android 的拉伸
+                // 回彈會把後面的位移全拿去做拉伸，這裡就只收得到第一下
+                return Offset(available.x, 0f)
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                reset()
+                return Velocity.Zero
+            }
+
+            private fun reset() {
+                childMoved = false
+                pulled = 0f
+                fired = false
+            }
+        }
+    }
+}
+
+/**
+ * 打字時把訊息區往下拖＝收鍵盤，不用按返回鍵。
+ *
+ * 在 Initial 階段旁觀、一個事件都不吃：列表照樣捲、長按照樣開選單，只是順手把鍵盤收掉。
+ * 只認往下（手指往鍵盤那邊拖）；往上拖是在找較新的訊息，收掉鍵盤反而礙事。
+ * 鍵盤沒開時整個不掛，平常捲動零負擔。
+ */
+@Composable
+private fun keyboardDismissOnDragDown(): Modifier {
+    val density = LocalDensity.current
+    // 鍵盤動畫每一幀高度都在變；包一層 derivedStateOf，只在「開／關」翻轉時才重組
+    val ime = WindowInsets.ime
+    val imeOpen by remember(ime, density) { derivedStateOf { ime.getBottom(density) > 0 } }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = LocalFocusManager.current
+    if (!imeOpen) return Modifier
+    // 比系統的觸控誤差（約 8dp）大一截：手指按下時的抖動不算
+    val threshold = with(density) { 24.dp.toPx() }
+    return Modifier.pointerInput(Unit) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            var dx = 0f
+            var dy = 0f
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                    .firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) break
+                val d = change.position - change.previousPosition
+                dx += d.x
+                dy += d.y
+                if (dy > threshold && dy > abs(dx)) {
+                    focus.clearFocus()
+                    keyboard?.hide()
+                    break
+                }
+            }
+        }
     }
 }
 
@@ -419,24 +530,28 @@ private fun ChatBody(
         }
         HorizontalDivider(color = Palette.Line, thickness = 0.6.dp)
 
+        // 訊息區往下拖就收鍵盤（見 keyboardDismissOnDragDown）。輸入列不掛
+        val dismissKb = keyboardDismissOnDragDown()
+
         // 忙的時候也要走下面那條路：狀態列現在住在對話串的尾巴，
         // 對話還空著就送出第一則訊息時，這裡若走大臉分支會連狀態列一起沒有
         if (state.items.isEmpty() && preview.isEmpty() && !state.busy && state.historyLoading) {
             // 歷史還在路上：先畫骨架，不要閃一下大臉／「還沒有對話」再換成內容。
             // 切對話與冷啟動都會經過這裡，snapshot 一趟通常幾百毫秒
-            HistorySkeleton(Modifier.weight(1f).fillMaxWidth())
+            HistorySkeleton(Modifier.weight(1f).fillMaxWidth().then(dismissKb))
         } else if (state.items.isEmpty() && preview.isEmpty() && !state.busy) {
             // 空對話：大臉問候。這是桌寵存在感最強的時刻。
             Column(
-                Modifier.weight(1f).fillMaxWidth(),
+                Modifier.weight(1f).fillMaxWidth().then(dismissKb),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
                 PetFace(state.pet, 120.dp)
-                // 連得上就不寫字，一顆吉祥物就夠了。連不上才印原因。
+                // 連得上就不寫字，一顆吉祥物就夠了。連不上才印原因；還在連就說在連
                 if (!state.connected) {
                     Text(
-                        "……連不上電腦。它開著嗎？",
+                        if (state.connecting && state.connError == null) "連線中…"
+                        else "……連不上電腦。它開著嗎？",
                         color = Palette.TextDim, fontSize = Type.Body,
                         modifier = Modifier.padding(top = 16.dp),
                     )
@@ -448,7 +563,7 @@ private fun ChatBody(
             val lastReply = state.items.indexOfLast { it is TraceItem.Reply }
             // Box 只是為了讓回到底部那顆浮在訊息流上。不用 weight 給 LazyColumn
             // 而是給 Box：兩層都吃 weight 的話，第二層拿到的是「剩下的剩下」
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            Box(Modifier.weight(1f).fillMaxWidth().then(dismissKb)) {
               LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -707,13 +822,16 @@ private fun ChatTopBar(
                     modifier = Modifier.padding(end = 8.dp), maxLines = 1)
             }
             // 連得上就不寫字——正常是常態，常態不需要標示。斷線才印，
-            // 而且用文字不用一顆點：點只有顏色，色弱看不出差別
+            // 而且用文字不用一顆點：點只有顏色，色弱看不出差別。
+            // 還在連、成敗都還沒回音（剛開 App 就是這樣）是灰字「連線中…」：
+            // 那段期間寫紅字「斷線」，看起來像根本沒在連
             if (!state.connected) {
+                val trying = state.connecting && state.connError == null
                 Text(
-                    "斷線",
+                    if (trying) "連線中…" else "斷線",
                     fontSize = Type.Tiny,
                     fontFamily = FontFamily.SansSerif,
-                    color = Palette.Danger,
+                    color = if (trying) Palette.TextFaint else Palette.Danger,
                     modifier = Modifier.padding(end = 6.dp),
                 )
             }

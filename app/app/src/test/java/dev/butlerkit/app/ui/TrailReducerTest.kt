@@ -312,4 +312,30 @@ class TrailReducerTest {
         val ask = t.items.filterIsInstance<TraceItem.AskItem>().single()
         assertTrue(ask.pending)
     }
+
+    @Test
+    fun `換 session 畫一條線，即時與歷史同一種`() {
+        // 即時：session.rotated 事件（先前是 status 的 note，接著就被 turn.start 清掉）
+        val t = run(
+            ev("session.rotated", """{"note":"新的一天，換了一段新的 session","period":"daily"}""", turn = "-"),
+            ev("turn.start"),
+        )
+        val live = t.items.first() as TraceItem.SessionBreak
+        assertEquals("新的一天，換了一段新的 session", live.text)
+
+        // 歷史：兩段逐字稿之間那則 system／rotate
+        val items = TrailReducer.fromHistory(
+            "c",
+            listOf(
+                HistoryMsg("assistant", "昨天的話", atMs = 1_000L),
+                HistoryMsg("system", "新的一天，換了一段新的 session", atMs = 1_000L, kind = "rotate"),
+                HistoryMsg("user", "今天", atMs = 5_000L),
+                HistoryMsg("system", "背景工作「整理」完成，助理接手", atMs = 6_000L),
+            ),
+        )
+        assertTrue(items[1] is TraceItem.SessionBreak)
+        assertTrue("沒有 kind 的 system 還是說明行", items[3] is TraceItem.WakeNote)
+        // 分隔線的時間＝上一段最後一則：往前翻頁的游標仍然是那則，不會漏掉它
+        assertEquals(1_000L, TrailReducer.oldestAtMs(items))
+    }
 }

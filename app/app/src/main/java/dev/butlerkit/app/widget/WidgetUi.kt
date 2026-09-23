@@ -53,6 +53,10 @@ internal object W {
     val Warn = ColorProvider(day = Color(0xFFB07C1E), night = Color(0xFFD4AB5E))     // warn
     val Danger = ColorProvider(day = Color(0xFFC0392B), night = Color(0xFFE57368))   // danger
     val Now = ColorProvider(day = Color(0x1F4A6FA5), night = Color(0x2E7FA0D4))      // accentSoft：正在進行中的那列
+    // 下課時「下一堂」那列／格：跟上課中同一個底色（兩者不會同時出現），差在沒有色塊
+    val Next = Now
+    // 上課中已經過去的那一段，疊在 Now 上面。沒填到的那段就是還剩的時間
+    val NowFill = ColorProvider(day = Color(0x4D4A6FA5), night = Color(0x807FA0D4))
     val Bar = ColorProvider(day = Color(0x664A6FA5), night = Color(0x667FA0D4))      // 長條圖的過去幾天，今天那根才是實色
 
     // 課表 widget 跟 App 內的課表頁一致（Accents 預設全指向 accent）

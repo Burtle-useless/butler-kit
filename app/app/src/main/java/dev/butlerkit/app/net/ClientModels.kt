@@ -51,6 +51,11 @@ data class HistoryMsg(
      * 這樣重裝 App、被系統回收、換手機，該回答的那題都還在原地等。
      */
     val ask: AskRequest? = null,
+    /**
+     * system 那種的細分。"rotate"＝換了一段新的 session 的分隔線（伺服器在兩段逐字稿
+     * 之間補的，見 server/engine/history.py 的 _divider），其餘是「助理接手」那種說明行。
+     */
+    val kind: String = "",
 )
 
 /**

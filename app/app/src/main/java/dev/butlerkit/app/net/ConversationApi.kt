@@ -273,6 +273,7 @@ internal class ConversationApiImpl(core: ClientCore) : ConversationApi, ClientCo
                 atMs = m.optLong("at_ms"),
                 ask = parseHistoryAsk(m.optJSONObject("ask"), "h$i"),
                 tools = parseHistoryTools(m.optJSONArray("tools")),
+                kind = m.optString("kind"),
             )
         }
 

@@ -58,6 +58,11 @@ data class Course(
     val teacher: String,
     val room: String,
     val note: String,
+    /**
+     * 這堂課的工作區資料夾名（伺服器 courses/workspaces.py 對好寫回課表的），
+     * 例如「通識：生活中的天文學」→「天文學」。沒有就是空字串。
+     */
+    val folder: String = "",
 )
 
 /** 第幾節是幾點到幾點。每個學校不一樣，所以這是可編輯的資料而不是常數。 */
@@ -141,6 +146,7 @@ internal fun JSONObject.toCourse() = Course(
     teacher = optString("teacher"),
     room = optString("room"),
     note = optString("note"),
+    folder = optString("folder"),
 )
 
 internal fun JSONObject.toPeriod() = Period(

@@ -73,6 +73,8 @@ internal fun CoursePane(
     onOpenCourse: (CourseInfo) -> Unit = {},
     lead: LazyListScope.() -> Unit = {},
     extra: LazyListScope.() -> Unit = {},
+    /** 整頁最底下（加課表單與節次表之後）。課程頁放換學期那一列。 */
+    tail: LazyListScope.() -> Unit = {},
 ) {
     var day by remember { mutableStateOf(todayDay()) }
     // 同 CalendarPane：沒手動選過星期就跟著今天走。停在課表過夜的話，
@@ -358,6 +360,7 @@ internal fun CoursePane(
                 }
             }
         }
+        tail()
     }
 }
 

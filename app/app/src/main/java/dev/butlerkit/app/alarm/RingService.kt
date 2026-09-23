@@ -58,8 +58,9 @@ class RingService : Service() {
         }
         startRinging()
 
-        // 沒人理就別響到天荒地老（也別把電池吸乾）。五分鐘後自己收工，
-        // 通知會留在通知列上，回頭看得到錯過了什麼。
+        // 沒人理就別響到天荒地老（也別把電池吸乾）。五分鐘後自己收工。
+        // 先清掉前一個鬧鐘排的收工：兩個鬧鐘接連響時，第一個的計時會把第二個提早切掉。
+        autoStop.removeCallbacksAndMessages(null)
         autoStop.postDelayed({ stopSelf() }, AUTO_STOP_MS)
         return START_NOT_STICKY
     }
@@ -114,12 +115,18 @@ class RingService : Service() {
 
     private fun startRinging() {
         Notifier.ensureChannels(this)
+        // 前一個鬧鐘還在響（兩個鬧鐘接連觸發，同一個服務實例會再收到一次 onStartCommand）：
+        // 先把它停掉放掉。先前直接 new 一個新的蓋掉 `player`，舊的那個繼續循環播放、
+        // 再也沒有任何參照停得掉它——按「關掉」只停得了第二個。
+        stopRinging()
         runCatching {
+            // 手機沒設預設鬧鈴時前兩個都可能是 null，setDataSource(null) 拋例外、
+            // 被 runCatching 吞掉，鬧鐘就完全靜音。系統預設鬧鈴的 URI 一定在。
             val uri = RingtoneManager.getActualDefaultRingtoneUri(
                 this, RingtoneManager.TYPE_ALARM,
             ) ?: RingtoneManager.getActualDefaultRingtoneUri(
                 this, RingtoneManager.TYPE_NOTIFICATION,
-            )
+            ) ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             player = MediaPlayer().apply {
                 setDataSource(this@RingService, uri)
                 setAudioAttributes(
@@ -146,12 +153,17 @@ class RingService : Service() {
         }
     }
 
-    override fun onDestroy() {
-        autoStop.removeCallbacksAndMessages(null)
+    /** 停掉並放掉目前的鈴聲與震動。重複呼叫無害。 */
+    private fun stopRinging() {
         runCatching { player?.stop() }
-        player?.release()
+        runCatching { player?.release() }
         player = null
         runCatching { vibrator?.cancel() }
+    }
+
+    override fun onDestroy() {
+        autoStop.removeCallbacksAndMessages(null)
+        stopRinging()
         super.onDestroy()
     }
 
