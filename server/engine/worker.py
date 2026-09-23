@@ -30,7 +30,7 @@ from util import atomic_write_text, read_text_with_retry
 from . import bg_notify
 from . import runner as engine_runner
 from . import state as state_mod
-from .errors import AUTO_RESUME_MAX_SEC, reset_label
+from .errors import AUTO_RESUME_MAX_SEC, MIN_RESUME_WAIT_SEC, reset_label
 from .mailbox import WakeTicket
 from .state import get_state
 from .turn import handle_turn, handle_wake, stamp
@@ -353,12 +353,17 @@ class Worker:
             # 額度用盡：訊息不丟，等到 CLI 說的回復時刻自動再跑一次（只等一次，
             # 再撞就交給人）。等待期間 `running` 指著 sleep 那個 task，所以按停止
             # 停得掉、新送來的訊息會照規矩排隊在後面。
-            wait = err.resets_at - time.time()
-            if 0 < wait <= AUTO_RESUME_MAX_SEC:
+            # 回復時刻已經過了（CLI 那句話是稍早產生的，見 errors.parse_resets_at）
+            # 也照樣等一下再試：先前 wait<=0 直接放棄，訊息就停在「用量到上限」
+            wait = max(err.resets_at - time.time(), MIN_RESUME_WAIT_SEC)
+            if wait <= AUTO_RESUME_MAX_SEC:
+                resume_at = time.time() + wait
                 await fe.emit(make_event(
                     conv_id, "-", "status",
-                    note=f"額度用完了，{reset_label(err.resets_at)} 自動繼續",
+                    note=f"額度用完了，{reset_label(resume_at)} 自動繼續",
                     phase="waiting",
+                    # 實際會重跑的時刻（前端畫倒數用）。不是 err.resets_at：那個可能已經過了
+                    resets_at=resume_at,
                 ))
                 # 等待期間服務重啟（使用者按重新啟動、當機）會把佇列連同這則一起弄丟。
                 # 先落檔，啟動時 `restore_pending` 會把它重新排回去

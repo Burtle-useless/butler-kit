@@ -76,9 +76,21 @@ DEV_CONSOLE_CONV: Final[str] = os.environ.get("BUTLER_CONV") or "dev-console"
 #
 # 預設放在家目錄底下；要換位置設 `BUTLER_COURSES_DIR`。目錄不存在時課程頁
 # 就是一片空的，不會報錯——還沒開始用這個功能的人不該被一個錯誤訊息攔住。
-COURSES_DIR: Final[Path] = Path(
-    os.environ.get("BUTLER_COURSES_DIR") or (Path.home() / "courses")
-)
+#
+# 課表一變，伺服器就會在這裡**建資料夾**（courses.workspaces：課表上每門課都要有
+# 工作區），所以資料目錄不是正式那份的時候（測試、借引擎用的其他實例）不准指到
+# 正式的這一份：沒明講就落在自己資料目錄底下，跟 `_data_dir` 同一個理由——
+# 測試不該有辦法碰到正式資料。
+def _courses_dir() -> Path:
+    override = os.environ.get("BUTLER_COURSES_DIR")
+    if override:
+        return Path(override)
+    if DATA_DIR != SERVER_DIR / "data":
+        return DATA_DIR / "courses"
+    return Path.home() / "courses"
+
+
+COURSES_DIR: Final[Path] = _courses_dir()
 
 
 def _courses_enabled() -> bool:

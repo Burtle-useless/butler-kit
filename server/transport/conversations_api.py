@@ -18,6 +18,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 import outbox
 from engine import bg_notify, client_pool, get_state, profiles
+from util import is_session_id
 from engine import models as model_catalog
 from engine import state as state_mod
 
@@ -157,7 +158,8 @@ async def adopt_session(session_id: str, _: str = Depends(require_token)) -> dic
     """
     from engine.history import session_exists
     from engine.sessions import fork_session, session_cwd
-    if not session_exists(session_id):
+    # 路徑參數直接拼進 glob，不是 UUID 的樣子一律當不存在（`*` 會對到任意 session）
+    if not is_session_id(session_id) or not session_exists(session_id):
         raise HTTPException(404, "找不到這個 session")
 
     # 先把要用的東西全部備齊，這幾步都只讀不寫，失敗了也不留痕跡

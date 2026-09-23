@@ -66,6 +66,9 @@ def _keep_sid(sid: str | None, state: ConvState) -> None:
     if not sid or state.session_id == sid:
         return
     state.session_id = sid
+    # 換成新的一段 session（第一次開、輪替、續接失敗改開新的）：記下開始時間，
+    # 助理每天／課程每週換新 session 靠它判斷（見 engine.rotation）
+    state.session_started = time.time()
     persist(state)
 
 
@@ -628,7 +631,7 @@ async def run_turn(
         diag.record(
             "turn", conv=conv, turn=turn_id,
             prompt=diag.head(prompt, 40) if wake is None else "〔wake〕",
-            msgs=[type(m).__name__ for m in messages],
+            msgs=diag.msg_summary(messages),
             failed=failure[0].kind, resets_at=failure[0].resets_at, ok=False,
         )
         await frontend.emit(make_event(
@@ -701,7 +704,7 @@ async def run_turn(
         "turn",
         conv=conv, turn=turn_id,
         prompt=diag.head(prompt, 40) if wake is None else "〔wake〕",
-        msgs=[type(m).__name__ for m in messages],
+        msgs=diag.msg_summary(messages),
         texts=[
             len("".join(b.text for b in m.content if hasattr(b, "text")))
             for m in messages if isinstance(m, AssistantMessage)

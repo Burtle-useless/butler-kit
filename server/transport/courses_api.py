@@ -18,8 +18,12 @@
 原文照樣給**——App 有 Markdown 元件，原文永遠看得到。
 
 課表對照：資料夾名（「微積分一」）與 agenda.json 的課名（「微積分（一）」）
-來源不同，靠 `norm` 正規化後互相包含來對。對不到就只是課表格子點不進工作區，
-資料本身照列。
+來源不同。列課之前先跑 `courses.workspaces.sync`：課表上每門課都保證有
+資料夾，對到的名字寫回課表那筆的 `folder`，這裡就照那個欄位對；舊資料沒有那個欄位
+才退回 `names_match`（正規化後互相包含）。
+
+換學期（`/semester`）：這學期的資料夾與課表收進 `_封存/<學期>/`，課程對話一起收掉，
+見 `courses.semester`。
 """
 from __future__ import annotations
 
@@ -31,14 +35,18 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-import config
 from agenda.store import AGENDA_FILE
+from courses import semester, workspaces
+from courses.workspaces import course_dirs, names_match, norm, root  # noqa: F401 — 測試與舊呼叫端從這裡拿
+from engine import bg_notify, client_pool
+from engine import state as state_mod
 from engine.profiles import COURSE_PREFIX
 from util import read_text_with_retry
 
+from . import agenda_api
 from .auth import require_token
 
 log = logging.getLogger(__name__)
@@ -51,29 +59,6 @@ FILE_DIRS = ("raw", "notes", "對話")
 # 一門課列到這麼多檔就該整理了，不是這裡的問題；擋住是為了別把一整個 raw/ 的
 # 逐字稿目錄一次塞進一個 JSON
 FILE_MAX = 400
-
-
-# ── 名稱對照 ────────────────────────────────────────────────────────────────
-_NORM_DROP = re.compile(r"[\s（）()【】\[\]・．.,，、:：;；\-—–_]")
-
-
-def norm(s: str) -> str:
-    """去空白、括號、標點與「與／的／之」：「光電與材料實驗（一）」→「光電材料實驗一」。"""
-    s = _NORM_DROP.sub("", s)
-    return s.replace("與", "").replace("的", "").replace("之", "").lower()
-
-
-def names_match(folder: str, agenda_name: str) -> bool:
-    """資料夾名對得到課表課名嗎。
-
-    相等、或短的那個被長的包含——「自我健康促進」對「健康促進：自我健康促進與評估」
-    是包含，對「健康促進：生活中的腦神經科學」不是。至少兩個字才算，
-    免得「一」這種對到一整排。
-    """
-    a, b = norm(folder), norm(agenda_name)
-    if not a or not b or min(len(a), len(b)) < 2:
-        return False
-    return a == b or a in b or b in a
 
 
 # ── md 解析 ─────────────────────────────────────────────────────────────────
@@ -162,38 +147,18 @@ def parse_log(md: str) -> list[dict[str, str]]:
 
 
 # ── 檔案系統 ────────────────────────────────────────────────────────────────
-def root() -> Path:
-    return Path(config.COURSES_DIR)
-
-
-def course_dirs() -> list[Path]:
-    """有資料的課：底下的資料夾。`_`／`.` 開頭的是元資料，散在根目錄的檔案不是課。"""
-    r = root()
-    if not r.is_dir():
-        return []
-    return sorted(
-        p for p in r.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))
-    )
-
-
 def course_dir(name: str) -> Path:
-    """[name] 一定要是一個乾淨的資料夾名。
+    """[name] 一定要是 `course_dirs()` 真的列得出來的其中一門課，否則 404。
 
-    帶路徑分隔、`..`、或 `_`／`.` 開頭一律 404——這組端點會回檔案內容，
-    讓它走到 courses 之外就是任意讀檔。
+    這組端點會回檔案內容，讓它走到 courses 之外就是任意讀檔。黑名單的寫法
+    （擋路徑分隔、`..`、`_`／`.` 開頭）會漏掉**磁碟代號**：Windows 上
+    `root() / "F:"` 直接變成 F 槽，`/v1/courses/F:/file?path=…` 讀得到整顆 F 槽
+    黑名單總會漏一種寫法，所以用白名單。
     """
-    bad = (
-        not name or name != name.strip()
-        or any(ch in name for ch in "/\\")
-        or name in (".", "..")
-        or name.startswith(("_", "."))
-    )
-    if bad:
-        raise HTTPException(status_code=404, detail="沒有這門課")
-    d = root() / name
-    if not d.is_dir():
-        raise HTTPException(status_code=404, detail="沒有這門課")
-    return d
+    for d in course_dirs():
+        if d.name == name:
+            return d
+    raise HTTPException(status_code=404, detail="沒有這門課")
 
 
 def _read(p: Path) -> str:
@@ -215,10 +180,16 @@ def _agenda_courses() -> list[dict[str, Any]]:
 
 
 def agenda_ids_for(folder: str, agenda: list[dict[str, Any]]) -> list[str]:
-    """這門課在課表上是哪幾格（一門課一週可能上兩次）。"""
+    """這門課在課表上是哪幾格（一門課一週可能上兩次）。
+
+    課表那筆寫了 `folder`（workspaces.sync 對好的）就只認它；沒寫的舊資料才用課名比。
+    """
     return [
         str(c.get("id")) for c in agenda
-        if c.get("id") and names_match(folder, str(c.get("name", "")))
+        if c.get("id") and (
+            c.get("folder") == folder if c.get("folder")
+            else names_match(folder, str(c.get("name", "")))
+        )
     ]
 
 
@@ -246,6 +217,8 @@ def summary_of(d: Path, agenda: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def list_courses() -> dict[str, Any]:
+    # 課表上有、資料夾沒有的課先補上——課是從 App、助理、還是手改課表加的都一樣
+    workspaces.sync()
     agenda = _agenda_courses()
     return {
         "root": root().as_posix(),
@@ -297,6 +270,48 @@ async def get_courses(_: str = Depends(require_token)) -> dict[str, Any]:
     return await asyncio.to_thread(list_courses)
 
 
+@router.get("/semester")
+async def get_semester(_: str = Depends(require_token)) -> dict[str, Any]:
+    """「換學期」面板：現在是哪學期、換過去叫什麼、會搬哪幾個資料夾。
+
+    **一定要排在 `/{name}` 前面**，不然 "semester" 會被當成課名、回 404。
+    """
+    return await asyncio.to_thread(semester.status)
+
+
+@router.post("/semester")
+async def post_semester(
+    payload: dict = Body(...), _: str = Depends(require_token),
+) -> dict[str, Any]:
+    """換學期。`{"next": "115-2"}`。
+
+    順序有講究：先確定沒有任何一條課程對話在跑（搬走它正在寫的資料夾會讓那一輪
+    寫進一個不存在的路徑），再丟掉那些對話的連線，才搬資料夾；搬完才把對話忘掉——
+    搬失敗的話對話還在，下次傳訊息會自己重連。
+    """
+    nxt = str(payload.get("next") or "").strip()
+    records = state_mod.records_with_prefix(COURSE_PREFIX)
+    busy = [cid.removeprefix(COURSE_PREFIX) for cid in records
+            if core.worker.is_running(cid) or bg_notify.active(cid)]
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=f"這幾門課的對話還在跑：{'、'.join(busy)}。等它們講完再換")
+    for cid in records:
+        await client_pool.drop(cid)
+    try:
+        result = await asyncio.to_thread(semester.switch, nxt, records)
+    except semester.SemesterError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    for cid in records:
+        await core.worker.remove(cid)
+        core._frontends.pop(cid, None)
+        state_mod.delete_conversation(cid)
+    result["conversations"] = len(records)
+    await agenda_api.abroadcast("courses")
+    return result
+
+
 @router.get("/{name}")
 async def get_course(name: str, _: str = Depends(require_token)) -> dict[str, Any]:
     return await asyncio.to_thread(course_detail, name)
@@ -320,3 +335,8 @@ async def get_file(name: str, path: str, _: str = Depends(require_token)) -> Fil
     if not target.is_file() or target.name.startswith("."):
         raise HTTPException(status_code=404, detail="沒有這個檔案")
     return FileResponse(target, filename=target.name)
+
+
+# 換學期要收掉課程對話的 worker 與畫面連線，那兩樣在 app.py 的模組層。
+# 放尾端 import 的理由同 conversations_api：app.py 在模組層 include 這個 router。
+from . import app as core  # noqa: E402

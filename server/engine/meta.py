@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -68,23 +69,49 @@ async def ask_once(prompt: str, model: str | None = None) -> str:
     模型進來。`no-session-persistence` 讓它不寫逐字稿，否則每取一次標題就在
     `~/.claude/projects` 多一個空殼 session，`/sessions` 清單會被灌爆。
     """
-    opts = ClaudeAgentOptions(
+    out, meta_sid = "", None
+
+    async def _run() -> None:
+        nonlocal out, meta_sid
+        async with ClaudeSDKClient(one_shot_options(model)) as c:
+            await c.query(prompt)
+            async for msg in iter_messages(c):
+                if isinstance(msg, ResultMessage):
+                    out = msg.result or ""
+                    meta_sid = msg.session_id
+                    break
+
+    # 一次性的查詢不該卡住呼叫端：生標題、交接稿都有人在等（逾時由呼叫端當失敗處理）
+    await asyncio.wait_for(_run(), timeout=ONE_SHOT_TIMEOUT_SEC)
+    _purge_title_shell(meta_sid)
+    return out.strip()
+
+
+# 一次性查詢的總時限。交接稿要讀整段對話，Opus 寫一兩千字可能要一分多鐘。
+ONE_SHOT_TIMEOUT_SEC = 180.0
+
+
+def one_shot_options(model: str | None) -> ClaudeAgentOptions:
+    """一次性查詢的 SDK 選項：**沒有工具、只回一輪、不載入任何使用者設定與 MCP**。
+
+    這些查詢吃的是對話原文（生標題）或整段逐字稿（交接稿），而那些內容可能包含助理
+    讀過的網頁與檔案——被注入的指令就在裡面。開著
+    bypassPermissions、工具全開、不限輪數，等於讓一段外來文字有機會在這台電腦上跑
+    Bash。它們要的只是一段文字，不需要任何工具。
+
+    順帶的好處：先前每生一次標題就帶起使用者設定裡的整串 MCP 伺服器
+    （裝了幾個就帶幾個），現在只剩 CLI 本身。
+    """
+    return ClaudeAgentOptions(
         cwd=str(config.DEFAULT_CWD),
         cli_path=config.CLAUDE_CLI,
         model=model,
-        permission_mode="bypassPermissions",
+        tools=[],                       # 內建工具全關
+        max_turns=1,
+        strict_mcp_config=True,         # 不載入任何 MCP 設定（這裡也沒給 mcp_servers）
+        setting_sources=[],             # 不讀使用者／專案設定（hooks、CLAUDE.md、plugins）
         extra_args={"no-session-persistence": None},
     )
-    out, meta_sid = "", None
-    async with ClaudeSDKClient(opts) as c:
-        await c.query(prompt)
-        async for msg in iter_messages(c):
-            if isinstance(msg, ResultMessage):
-                out = msg.result or ""
-                meta_sid = msg.session_id
-                break
-    _purge_title_shell(meta_sid)
-    return out.strip()
 
 
 async def generate_title(convo_text: str) -> str | None:

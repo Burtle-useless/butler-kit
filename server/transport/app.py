@@ -20,6 +20,7 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 import config
+from courses import workspaces as course_workspaces
 from engine import client_pool, location, ports, profiles, titles
 from engine import models as model_catalog
 from engine import state as state_mod
@@ -84,6 +85,12 @@ async def lifespan(app: FastAPI):
     n = await worker.restore_pending()
     if n:
         print(f"[butler] 限流等待中的 {n} 則訊息已重新排隊", flush=True)
+    # 課表上還沒有工作區的課先補上：課程對話記錄時要找得到資料夾，不必等誰先打開課程頁。
+    # 課程是選配的，沒開就不碰那個目錄
+    if config.COURSES_ENABLED:
+        made = await asyncio.to_thread(course_workspaces.sync)
+        if made["created"]:
+            print(f"[butler] 補建課程工作區：{'、'.join(made['created'])}", flush=True)
     try:
         yield
     finally:
@@ -163,6 +170,10 @@ async def stream(request: Request, _: str = Depends(require_token)):
         after = None
 
     async def gen():
+        # 一接通就先送一段註解，不等第一個心跳。Cloudflare 通道在後面有第一個位元組
+        # 之前不會把回應交給手機（實測標頭 15 秒多才到，跟第一個心跳同時），
+        # 而 App 冷啟動那條連線沒有要補的事件——手機就在「斷線」畫面白等 15 秒。
+        yield ServerSentEvent(comment="hello")
         async for ev in hub.stream(after):
             if await request.is_disconnected():
                 break

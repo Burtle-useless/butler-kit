@@ -24,11 +24,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 
 import config
+from util import atomic_write_text, read_text_with_retry
+
+log = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 _DATA = config.DATA_DIR / "kanban.json"
@@ -50,18 +55,35 @@ def _now_iso() -> str:
 
 
 def _load() -> dict[str, dict]:
+    """讀整塊看板。三種失敗分開對待（跟 engine.state 同一套規矩）：
+
+    - 檔案不存在：第一次用，空的沒問題。
+    - 讀不到（撞檔案鎖、重試到底仍失敗）：**往上拋**，讓這次操作失敗。
+      絕不能回空的——呼叫端接著寫回去就等於把整塊看板清掉。
+    - JSON 壞了：壞檔改名留證據、從空的開始，並記一筆。
+
+    任何讀檔錯誤都回 {}、寫入又不是原子的話，寫到一半被殺
+    （重啟、斷電）留下半截 JSON，下一次新增卡片就把整塊看板蓋成只剩那一張。
+    """
     if not _DATA.exists():
         return {}
+    text = read_text_with_retry(_DATA)
     try:
-        data = json.loads(_DATA.read_text(encoding="utf-8"))
-    except Exception:
+        data = json.loads(text)
+    except ValueError:
+        quarantine = _DATA.with_name(f"{_DATA.name}.corrupt-{int(time.time())}")
+        try:
+            _DATA.replace(quarantine)
+        except OSError:
+            pass
+        log.error("kanban.json 不是合法 JSON，已隔離到 %s，從空的開始", quarantine.name)
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def _save(cards: dict[str, dict]) -> None:
-    _DATA.parent.mkdir(parents=True, exist_ok=True)
-    _DATA.write_text(json.dumps(cards, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 原子寫入：寫到一半被殺也只會留下舊的完整檔，不會是半截 JSON
+    atomic_write_text(_DATA, json.dumps(cards, ensure_ascii=False, indent=2))
 
 
 def _live(cards: dict[str, dict]) -> list[dict]:

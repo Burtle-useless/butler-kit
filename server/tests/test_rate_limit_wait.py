@@ -57,9 +57,14 @@ def test_parse_resets_at() -> None:
     t = parse_resets_at("You've hit your session limit · resets 3:30pm (Asia/Taipei)", now)
     check("解析出當天 15:30", t is not None and datetime.fromtimestamp(t).strftime("%H:%M") == "15:30",
           str(t and datetime.fromtimestamp(t)))
+    # 剛過（三小時內）回今天那個過去的時刻，額度多半已經回來了，
+    # worker 會稍等一下就重試；先前一律算明天，19:31 看到「resets 7:20pm」就等到隔天
     t2 = parse_resets_at("You've hit your session limit · resets 11am", now)
-    check("時刻已過就算明天", t2 is not None and datetime.fromtimestamp(t2).day == 3
+    check("剛過的時刻回今天", t2 is not None and datetime.fromtimestamp(t2).day == 2
           and datetime.fromtimestamp(t2).hour == 11, str(t2 and datetime.fromtimestamp(t2)))
+    t2b = parse_resets_at("You've hit your session limit · resets 8am", now)
+    check("過很久才算明天", t2b is not None and datetime.fromtimestamp(t2b).day == 3
+          and datetime.fromtimestamp(t2b).hour == 8, str(t2b and datetime.fromtimestamp(t2b)))
     t3 = parse_resets_at("You've hit your weekly limit · resets 12am", now)
     check("12am 是 0 點", t3 is not None and datetime.fromtimestamp(t3).hour == 0)
     check("沒有時刻就回 None", parse_resets_at("You've hit your limit", now) is None)

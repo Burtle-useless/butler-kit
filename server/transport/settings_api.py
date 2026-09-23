@@ -44,14 +44,28 @@ async def get_settings(_: str = Depends(require_token)) -> dict:
 
 @router.post("/v1/settings")
 async def set_settings(payload: dict = Body(...), _: str = Depends(require_token)) -> dict:
-    """設帳號預設 model/effort。改了之後未被單獨覆寫的對話下次自動重建 client。"""
-    model = payload.get("model")
-    effort = payload.get("effort")
-    if model and not model_catalog.is_known(model):
-        raise HTTPException(status_code=400, detail=f"unknown model: {model}")
-    if effort is not None and effort not in _EFFORTS + [""]:
-        raise HTTPException(status_code=400, detail=f"unknown effort: {effort}")
-    state_mod.save_defaults(model or None, effort or None)
+    """設帳號預設 model/effort。改了之後未被單獨覆寫的對話下次自動重建 client。
+
+    **只改有送來的欄位**，空字串＝清掉那一欄（跟單一對話的設定端點同一套語意）。
+    兩欄一起存的話，只送一欄的前端改思考強度就會把
+    預設模型清掉了。型別不對一律 400（先前 `model=5` 是 500）。
+    """
+    model, effort = state_mod.default_model, state_mod.default_effort
+    if "model" in payload:
+        raw = payload.get("model")
+        if raw is not None and not isinstance(raw, str):
+            raise HTTPException(status_code=400, detail="model must be a string")
+        if raw and not model_catalog.is_known(raw):
+            raise HTTPException(status_code=400, detail=f"unknown model: {raw}")
+        model = raw or None
+    if "effort" in payload:
+        raw = payload.get("effort")
+        if raw is not None and not isinstance(raw, str):
+            raise HTTPException(status_code=400, detail="effort must be a string")
+        if raw and raw not in _EFFORTS:
+            raise HTTPException(status_code=400, detail=f"unknown effort: {raw}")
+        effort = raw or None
+    state_mod.save_defaults(model, effort)
     return {"model": state_mod.default_model, "effort": state_mod.default_effort}
 
 

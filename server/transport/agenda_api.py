@@ -14,7 +14,9 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+import config
 from agenda import store
+from courses import workspaces
 from protocol import make_event
 
 from .auth import require_token
@@ -38,7 +40,14 @@ def broadcast(what: str) -> None:
 
 
 async def abroadcast(what: str) -> None:
-    """給 engine 的 async 掛勾用。publish 本身同步不阻塞，包一層只為了型別對得上。"""
+    """改完資料之後的收尾：課表變了先補工作區，再通知所有裝置。
+
+    手動改（下面的路由）與助理改（engine 的 MCP 工具經 ports.agenda_changed）都走這裡，
+    所以「新加的課有沒有工作區」只有這一處決定（見 courses.workspaces）。
+    課程是選配的：沒開就只通知，不碰課程目錄。
+    """
+    if what == "courses" and config.COURSES_ENABLED:
+        await asyncio.to_thread(workspaces.sync)
     broadcast(what)
 
 
@@ -125,7 +134,7 @@ async def create(
     if kind not in ("events", "alarms", "ledger", "courses"):
         raise HTTPException(status_code=404, detail=f"未知的類別：{kind}")
     item = await asyncio.to_thread(lambda: _guard(_add))
-    broadcast(kind)
+    await abroadcast(kind)
     return item
 
 
@@ -141,7 +150,7 @@ async def patch(
     row = await asyncio.to_thread(
         lambda: _guard(lambda: store.update(kind, item_id, payload))  # type: ignore[arg-type]
     )
-    broadcast(kind)
+    await abroadcast(kind)
     return row
 
 
@@ -156,5 +165,5 @@ async def delete(
     gone = await asyncio.to_thread(store.remove, kind, item_id)  # type: ignore[arg-type]
     if not gone:
         raise HTTPException(status_code=404, detail=f"找不到：{item_id}")
-    broadcast(kind)
+    await abroadcast(kind)
     return {"deleted": item_id}

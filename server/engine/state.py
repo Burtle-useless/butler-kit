@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import config
@@ -48,6 +48,12 @@ class ConvState:
     # 不進持久化：它們是模型屬性、每回合都會重問，重啟後第一回合前先用估算頂著。
     ctx_max: int = 0                          # 這條對話真正的 context 上限（0＝還沒問到）
     ctx_threshold: int = 0                    # CLI 自己會啟動 auto-compact 的門檻
+    # 目前這段 session 從什麼時候開始（epoch 秒；None＝不知道，輪替時從逐字稿推）。
+    # 助理每天、課程每週換一段新的 session（見 engine.rotation），靠它判斷該不該換。
+    session_started: float | None = None
+    # 這條對話之前用過的 session，舊到新。換新 session 之後，畫面往上捲要接著讀
+    # 這些（見 history.load_history），模型也靠最後一段的路徑回頭找它不記得的事。
+    past_sessions: list[str] = field(default_factory=list)
     _no_think: bool = False                   # 本次是否關閉思考（空回覆重試逃生門）
 
 
@@ -163,6 +169,8 @@ def persist(state: ConvState) -> None:
         "model": state.model,
         "effort": state.effort,
         "cwd": str(state.cwd or config.DEFAULT_CWD),
+        "session_started": state.session_started,
+        "past_sessions": list(state.past_sessions),
     }
     _flush_map()
 
@@ -179,6 +187,8 @@ def get_state(conv_id: str) -> ConvState:
     cwd = Path(rec.get("cwd") or config.DEFAULT_CWD)
     if not cwd.is_dir():
         cwd = config.DEFAULT_CWD
+    past = rec.get("past_sessions")
+    started = rec.get("session_started")
     st = ConvState(
         conv_id=conv_id,
         cwd=cwd,
@@ -186,6 +196,8 @@ def get_state(conv_id: str) -> ConvState:
         forked_from=rec.get("forked_from"),
         model=rec.get("model"),
         effort=rec.get("effort"),
+        session_started=float(started) if isinstance(started, (int, float)) else None,
+        past_sessions=[s for s in past if isinstance(s, str)] if isinstance(past, list) else [],
     )
     _states[conv_id] = st
     return st
@@ -252,6 +264,29 @@ def list_conversations() -> list[dict]:
             "has_session": bool(sid),
         })
     return sorted(out, key=lambda e: e["mtime"], reverse=True)
+
+
+def records_with_prefix(prefix: str) -> dict[str, dict]:
+    """conv_id 以 [prefix] 開頭的對話的持久化紀錄（記憶體裡那份為準），外加標題。
+
+    換學期時用：課程對話收起來之前，把 session 對應抄一份存進封存夾。
+    """
+    out: dict[str, dict] = {}
+    for cid, rec in _load_map().items():
+        if cid.startswith(prefix):
+            out[cid] = dict(rec)
+    for cid, st in _states.items():
+        if cid.startswith(prefix):
+            out[cid] = {
+                **out.get(cid, {}),
+                "session_id": st.session_id,
+                "past_sessions": list(st.past_sessions),
+            }
+    titles = _load_titles()
+    for cid, rec in out.items():
+        if titles.get(cid):
+            rec["title"] = titles[cid]
+    return out
 
 
 def delete_conversation(conv_id: str) -> bool:

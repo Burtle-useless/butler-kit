@@ -21,7 +21,7 @@ from typing import Any
 import config
 from protocol import AskChoice, AskRequest, AskResponse, Event, Frontend, make_event
 
-from . import client_pool, diag
+from . import client_pool, diag, rotation
 from .errors import CCError, wrap
 from .fold import NO_RESPONSE, think_digest
 from .mailbox import WakeTicket
@@ -239,6 +239,13 @@ _compact_failed: dict[str, float] = {}     # conv → 上次壓縮失敗的 mono
 # 的事（壓縮、續跑），transport 也靠它決定排隊的訊息要等到什麼時候自動重跑。
 _limit_until: dict[str, float] = {}
 
+# wake 回合（助理自己醒來的那一輪）的同一種錯誤，多久內只報一次。
+# 四件背景工作同時跑完時，四個 wake 回合會在同一秒撞到限流，
+# 手機收到四則一模一樣的「用量到上限了」。使用者自己送的訊息不在此列——
+# 那一則出錯一定要告訴他，否則他送出去的話沒有任何回應。
+_WAKE_ERROR_DEDUP_SEC = 60.0
+_last_wake_error: dict[str, tuple[str, float]] = {}   # conv → (錯誤種類, monotonic 時刻)
+
 
 def limit_until(conv: str) -> float | None:
     """這條對話的額度什麼時候回復（epoch 秒）；沒有限流或已過期就是 None。"""
@@ -340,7 +347,10 @@ async def handle_turn(
     out = TurnOutcome()
     started = time.monotonic()
     try:
-        await _maybe_compact(state, frontend, conv)
+        # 助理每天、課程每週換一段新的 session，時機就是這裡：人送了新的一句、這一輪開始前。
+        # 換了就不必再壓縮（新 session 是空的）；沒換照舊看要不要壓（見 engine.rotation）
+        if not await rotation.maybe_rotate(state, frontend):
+            await _maybe_compact(state, frontend, conv)
         # 只有真的使用者訊息蓋時間戳。續跑與重試的提示走別的路徑進來，
         # 那些是同一則訊息的內部往返，蓋上去只會讓歷史多出幾個假的時間點
         await _run_with_recovery(
@@ -389,10 +399,10 @@ async def handle_wake(
         _persist_sid(res, state)
         await _settle(res, state, frontend, conv, out)
     except CCError as e:
-        await _handle_error(e, state, frontend, conv)
+        await _handle_error(e, state, frontend, conv, wake=True)
         return
     except Exception as e:  # noqa: BLE001 — 同 handle_turn：漏網的也要變成事件
-        await _handle_error(wrap(e), state, frontend, conv)
+        await _handle_error(wrap(e), state, frontend, conv, wake=True)
         return
     await _turn_done(frontend, conv, out, started, notify=bool(out.last_markdown))
 
@@ -657,14 +667,21 @@ async def _auto_continue(
 
 def _persist_sid(res: TurnResult, state: ConvState) -> None:
     if res.session_id:
+        if res.session_id != state.session_id:
+            state.session_started = time.time()     # 新的一段 session（見 engine.rotation）
         state.session_id = res.session_id
         persist(state)
 
 
 async def _handle_error(
     err: CCError, state: ConvState, frontend: Frontend, conv: str,
+    wake: bool = False,
 ) -> None:
-    """依錯誤類型決定善後動作，再把結果告訴使用者。"""
+    """依錯誤類型決定善後動作，再把結果告訴使用者。
+
+    [wake]＝這是助理自己醒來的那一輪（沒有人在等它回話）。這種回合的同一種錯誤
+    一分鐘內只報第一次，見 `_WAKE_ERROR_DEDUP_SEC`。
+    """
     # 錯誤一定要進診斷檔。先前只 emit 不記，919 個回合裡查不到任何一筆錯誤紀錄，
     # 事後對「那時到底怎麼了」只能猜（見 diag.py 的說明）。
     diag.record(
@@ -681,6 +698,18 @@ async def _handle_error(
         await client_pool.drop(conv)
     if err.kind == "RATE_LIMIT" and err.resets_at:
         _limit_until[conv] = float(err.resets_at)
+    if wake:
+        now = time.monotonic()
+        prev = _last_wake_error.get(conv)
+        _last_wake_error[conv] = (err.kind, now)
+        if prev is not None and prev[0] == err.kind and now - prev[1] < _WAKE_ERROR_DEDUP_SEC:
+            # 同一種錯誤剛報過：這一輪安靜收尾。**不能什麼都不發**——手機的忙碌旗標
+            # 只認 turn.done／error，不收尾的話狀態列與停止鍵會一直掛著。
+            await frontend.emit(make_event(
+                conv, "-", "turn.done", notify=False, used_tool=False,
+                markdown="", pending_ask=False, elapsed_ms=0,
+            ))
+            return
     payload: dict[str, Any] = {
         "kind": err.kind,
         "detail": err.user_msg,
