@@ -440,7 +440,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 這個對話現在攤在畫面上，收掉它累積的通知。
      *
-     * 三個進入點都要叫：[switchConversation] 涵蓋大部分情況，但 [enterQiTab] 與
+     * 三個進入點都要叫：[switchConversation] 涵蓋大部分情況，但 [enterChatTab] 與
      * [enterCcTab] 在「已經停在那個對話」時會提前 return，不補這一刀的話從通知
      * 點進來又切回同一頁的路徑就清不掉。
      */
@@ -717,7 +717,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 工作頁上次看的對話。null＝還沒選過（該頁顯示空狀態）。 */
     private var ccConv: String? = null
 
-    fun enterQiTab() {
+    fun enterChatTab() {
         // pendingNew 也要一併退掉：那是工作頁的待建立狀態，
         // 帶進助理頁會讓助理的訊息跑去開一條新的工作對話
         val s = _state.value

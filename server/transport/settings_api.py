@@ -19,14 +19,15 @@ from .auth import require_token
 
 router = APIRouter()
 
-# 模型清單**不在這裡寫死**：`engine/models` 從 CLI 的 initialize 回應拿官方的那份
-# （Default／Opus 1M／Fable／Sonnet／Haiku，含顯示名與各自支援的思考等級），CLI
-# 升版就自動長出新模型。2026-09-02 之前這裡是六個完整 id 的清單，每次官方換代都要人追。
+# 模型清單**不在這裡寫死**：`engine/models` 向官方要（`/v1/models`，輔以 CLI 的
+# initialize 清單），官方一發佈就自動長出新模型，含顯示名與各自支援的思考等級。
 _EFFORTS = list(model_catalog.ALL_EFFORTS)
 
 
 @router.get("/v1/settings")
 async def get_settings(_: str = Depends(require_token)) -> dict:
+    # 打開設定頁也算一個更新時機：清單過期了就在背景要一次，這次先回手上的
+    model_catalog.schedule_refresh()
     return {
         "model": state_mod.default_model,
         "effort": state_mod.default_effort,
@@ -39,6 +40,9 @@ async def get_settings(_: str = Depends(require_token)) -> dict:
         # 破壞性指令確認現在開著還是關著。由啟動環境的 CONFIRM_DANGEROUS 決定
         # （啟動腳本設 0＝關），前端要把它顯示出來，別讓人以為有把關。
         "confirm_dangerous": config.CONFIRM_ENABLED,
+        # 帳號預設沒設時實際用的模型（DEFAULT_MODEL，可由環境變數改）。App 的「跟隨」
+        # 那一列要照它寫，不能自己假設是官方別名 default
+        "builtin_model": config.DEFAULT_MODEL,
     }
 
 
@@ -62,7 +66,7 @@ async def set_settings(payload: dict = Body(...), _: str = Depends(require_token
         raw = payload.get("effort")
         if raw is not None and not isinstance(raw, str):
             raise HTTPException(status_code=400, detail="effort must be a string")
-        if raw and raw not in _EFFORTS:
+        if raw and not model_catalog.is_effort_known(raw):
             raise HTTPException(status_code=400, detail=f"unknown effort: {raw}")
         effort = raw or None
     state_mod.save_defaults(model, effort)

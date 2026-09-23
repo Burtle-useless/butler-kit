@@ -110,7 +110,7 @@ class CourseWidgetReceiver : GlanceAppWidgetReceiver() {
 private val SIZE_WEEK = DpSize(300.dp, 180.dp)
 
 /**
- * 「還有 25 分」或「到 12:10」。三節連上的課剩兩個多小時時寫「還有 140 分」
+ * 「還有 25 分」或「到 12:00」。三節連上的課剩兩個多小時時寫「還有 130 分」
  * 是要人心算的；超過一小時直接講幾點下課。
  */
 internal fun remainText(nowMin: Int, endMin: Int): String {

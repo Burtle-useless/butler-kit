@@ -39,7 +39,7 @@ def _tmp_file() -> Path:
 def _write_cached(path: Path, minutes_ago: float) -> dict:
     """直接寫一筆指定新舊程度的快取（不經 save，才控制得了時間戳）。"""
     rec = {
-        "lat": 24.7956, "lon": 120.9936, "address": "新竹市東區五福路二段",
+        "lat": 25.0478, "lon": 121.5170, "address": "臺北市中正區北平西路3號",
         "accuracy_m": 12.0,
         "ts": (datetime.now() - timedelta(minutes=minutes_ago)).strftime(
             "%Y-%m-%dT%H:%M:%S"),
@@ -57,18 +57,18 @@ def test_save_validates() -> None:
     print("\n[座標驗證]")
     f = _tmp_file()
     with patch.object(location, "LOCATION_FILE", f):
-        rec = location.save({"lat": "24.7956", "lon": 120.9936,
-                             "address": " 新竹市東區 ", "accuracy_m": 12.34})
-        check("字串型別的座標會轉成數字", rec["lat"] == 24.7956, str(rec["lat"]))
-        check("地址前後空白被去掉", rec["address"] == "新竹市東區", repr(rec["address"]))
+        rec = location.save({"lat": "25.0478", "lon": 121.5170,
+                             "address": " 臺北市中正區 ", "accuracy_m": 12.34})
+        check("字串型別的座標會轉成數字", rec["lat"] == 25.0478, str(rec["lat"]))
+        check("地址前後空白被去掉", rec["address"] == "臺北市中正區", repr(rec["address"]))
         check("精度留一位小數", rec["accuracy_m"] == 12.3, str(rec["accuracy_m"]))
         check("時間戳存到秒", len(rec["ts"]) == 19, rec["ts"])
-        check("讀得回來", (location.last_known() or {}).get("lat") == 24.7956)
+        check("讀得回來", (location.last_known() or {}).get("lat") == 25.0478)
 
         # 不合法的一律擋下來。經緯度顛倒（lat=120）是最常見的那種錯，
         # 不擋的話會存進一個在南極海的位置，而且完全沒有人會發現。
         for bad, why in [
-            ({"lat": 120.9, "lon": 24.7}, "經緯度顛倒"),
+            ({"lat": 121.5, "lon": 25.0}, "經緯度顛倒"),
             ({"lat": None, "lon": 1}, "缺 lat"),
             ({"lat": "abc", "lon": 1}, "lat 不是數字"),
             ({"lat": 1, "lon": 999}, "lon 超出範圍"),
@@ -142,7 +142,7 @@ def test_device_silent_falls_back_and_says_so() -> None:
             patch.object(location, "_ask_device", dead):
         got = _payload(asyncio.run(location.where_am_i.handler({})))
 
-    check("仍然給得出位置", got.get("address") == "新竹市東區五福路二段", str(got))
+    check("仍然給得出位置", got.get("address") == "臺北市中正區北平西路3號", str(got))
     check("來源講明手機沒回應", "沒回應" in got["source"], got["source"])
     check("年齡算對（約 125 分鐘）", 124 <= got["age_min"] <= 126, str(got["age_min"]))
 

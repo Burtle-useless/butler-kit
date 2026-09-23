@@ -90,7 +90,7 @@ import dev.butlerkit.app.ui.Type
  * 五格會讓每個點擊目標窄到容易誤觸。
  */
 private enum class Tab(val label: String, val icon: ImageVector?) {
-    Qi("助理", null),                                  // 助理的圖示是牠本人，不是向量圖
+    Chat("助理", null),                                  // 助理的圖示是牠本人，不是向量圖
     Work("工作", Icons.AutoMirrored.Filled.List),
     Course("課程", Icons.Filled.School),
     Daily("日常", Icons.Filled.DateRange),
@@ -198,7 +198,7 @@ class MainActivity : ComponentActivity() {
 private fun Root(prefs: Prefs, nav: Nav = Nav()) {
     val vm: ChatViewModel = viewModel()
     val state by vm.state.collectAsState()
-    var tab by remember { mutableStateOf(Tab.Qi) }
+    var tab by remember { mutableStateOf(Tab.Chat) }
     // 設定不是分頁而是蓋上來的一層：它離開底欄之後，如果還混在 tab 狀態裡，
     // 底欄會出現「四格全都沒選中」的空窗畫面。
     var settingsOpen by remember { mutableStateOf(false) }
@@ -225,7 +225,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
     // 分頁決定看哪個對話：助理頁固定那條專屬對話，工作頁回到上次選的
     LaunchedEffect(tab) {
         when (tab) {
-            Tab.Qi -> vm.enterQiTab()
+            Tab.Chat -> vm.enterChatTab()
             Tab.Work -> vm.enterCcTab()
             else -> Unit
         }
@@ -236,11 +236,11 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
     LaunchedEffect(nav) {
         nav.conv?.takeIf { it.isNotBlank() }?.let {
             if (it == ChatViewModel.DEFAULT_CONV) {
-                tab = Tab.Qi
+                tab = Tab.Chat
                 // 顯式再叫一次。上面那個 LaunchedEffect(tab) 只在 tab **變動**時跑，
                 // 而從通知點進來時 tab 常常本來就停在助理頁——那條路上
-                // enterQiTab 不執行，markRead 也就不執行，通知點了不會消失。
-                vm.enterQiTab()
+                // enterChatTab 不執行，markRead 也就不執行，通知點了不會消失。
+                vm.enterChatTab()
             } else if (coursesOn && ChatViewModel.isCourseConv(it)) {
                 // 課程對話的通知：進課程頁、直接落在那門課的工作區
                 tab = Tab.Course
@@ -258,6 +258,15 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
             "course" -> if (coursesOn) tab = Tab.Course
             "tools" -> tab = Tab.Tools
         }
+    }
+
+    // 模型面板裡點了「去更新」：換到工具頁，並讓它捲到 Claude Code 那段。
+    // 設定頁也有同一個面板，所以要先把設定那層收掉
+    var toolsFocusSdk by remember { mutableStateOf(false) }
+    val openToolsForUpdate = {
+        settingsOpen = false
+        tab = Tab.Tools
+        toolsFocusSdk = true
     }
 
     // 設定蓋成獨立一層，不留底欄：進來就是專心改設定，改完按返回鍵回原本那頁
@@ -279,6 +288,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                 onLoad = vm::loadSettings,
                 onApply = vm::applySettings,
                 onSetCwd = vm::setCwd,
+                onOpenTools = openToolsForUpdate,
             )
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
@@ -321,9 +331,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                                 color = if (tab == t) Palette.Accent else Palette.TextFaint)
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            // 透明：M3 預設那顆膠囊指示是 Material 的招牌形狀，
-                            // 在報紙版面上像貼了一塊藥丸貼紙。選中狀態交給
-                            // 朱紅字色表達，報紙的「現在在這裡」本來就是紅筆圈的
+                            // 透明：不用 M3 預設那顆膠囊指示，選中狀態只用字色表達
                             indicatorColor = Color.Transparent,
                         ),
                     )
@@ -343,7 +351,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
             // 聊天頁不靠這個——它的狀態在 ViewModel 裡，本來就活得比畫面久。
             tabStates.SaveableStateProvider(tab) {
                 when (tab) {
-                    Tab.Qi -> ChatScreen(
+                    Tab.Chat -> ChatScreen(
                         state = state,
                         title = "助理",
                         multiConv = false,
@@ -360,6 +368,7 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                         onRemoveAttach = vm::removeAttachment,
                         onConvSettings = vm::applyConvSettings,
                         onLoadOlder = { vm.loadOlder(state.currentConv) },
+                        onOpenTools = openToolsForUpdate,
                     )
                     Tab.Work -> ChatScreen(
                         state = state,
@@ -378,13 +387,18 @@ private fun Root(prefs: Prefs, nav: Nav = Nav()) {
                         onRemoveAttach = vm::removeAttachment,
                         onConvSettings = vm::applyConvSettings,
                         onLoadOlder = { vm.loadOlder(state.currentConv) },
+                        onOpenTools = openToolsForUpdate,
                     )
                     Tab.Course -> CourseScreen(
                         state = state, vm = vm,
                         pendingCourse = pendingCourse,
                     ) { pendingCourse = null }
                     Tab.Daily -> AgendaScreen(vm.client, pendingSub) { pendingSub = null }
-                    Tab.Tools -> ToolsScreen(vm.client) { settingsOpen = true }
+                    Tab.Tools -> ToolsScreen(
+                        vm.client,
+                        focusSdk = toolsFocusSdk,
+                        onFocused = { toolsFocusSdk = false },
+                    ) { settingsOpen = true }
                 }
             }
         }

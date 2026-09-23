@@ -28,7 +28,7 @@ client = TestClient(app)
 
 FAILED: list[str] = []
 
-MODEL = "claude-fable-5[1m]"    # 後備清單就有，不依賴 CLI 連線
+MODEL = "claude-fable-5[1m]"    # claude- 開頭的 id 一律收（見 models.is_known），不依賴清單
 
 
 def check(name: str, cond: bool, extra: str = "") -> None:

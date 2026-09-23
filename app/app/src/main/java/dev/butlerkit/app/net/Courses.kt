@@ -4,7 +4,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 課程頁的資料：伺服器直接讀 `academic/courses/<課>/` 給的形狀
+ * 課程頁的資料：伺服器直接讀課程資料夾（`BUTLER_COURSES_DIR`，預設 `~/courses`）底下
+ * `<課>/` 給的形狀
  * （`server/transport/courses_api.py`）。清單一筆是 [CourseInfo]，點進一門課
  * 拿到的全貌是 [CourseDetail]。
  *

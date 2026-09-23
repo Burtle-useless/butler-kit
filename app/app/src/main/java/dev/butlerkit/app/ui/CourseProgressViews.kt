@@ -29,7 +29,7 @@ import dev.butlerkit.app.net.ProgressRow
  * ——絕大多數會是「提問推斷」，不標的話他會把它當成績。
  */
 
-/** 程度標籤的深淺：單色印刷風，用底色濃淡分，不用紅黃綠。 */
+/** 程度標籤的深淺：跟整個 App 一樣只用一個顏色，用底色濃淡分，不用紅黃綠。 */
 @Composable
 private fun levelAlpha(level: String): Float = when (level) {
     "懂" -> 0.22f

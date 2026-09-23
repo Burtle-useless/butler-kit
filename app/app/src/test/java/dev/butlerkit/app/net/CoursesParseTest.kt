@@ -14,17 +14,17 @@ class CoursesParseTest {
     private val list = """
         {"root": "C:/x/courses", "courses": [
           {"name": "微積分一", "conv_id": "course:微積分一", "title": "微積分（一）",
-           "teacher": "林育立", "room": "M203", "slot": "週三 第1節", "note": "必修 3 學分",
+           "teacher": "陳老師", "room": "A203", "slot": "週一 第3節", "note": "必修",
            "counts": {"懂": 1, "半懂": 2, "不會": 0},
            "log_count": 5, "last_log": "09-07 10:15", "agenda_ids": ["c1", "c2"]},
-          {"name": "基礎物理"}
+          {"name": "線性代數"}
         ]}
     """.trimIndent()
 
     private val detail = """
         {"name": "微積分一", "conv_id": "course:微積分一", "title": "微積分（一）",
          "counts": {"懂": 1, "半懂": 1, "不會": 1}, "agenda_ids": ["c1"],
-         "info": {"老師": "林育立", "教室": "M203", "時段": "週三 第1節"},
+         "info": {"老師": "陳老師", "教室": "A203", "時段": "週一 第3節"},
          "progress": [
            {"topic": "極限", "level": "半懂", "basis": "提問推斷", "stuck": "ε 誰先給", "updated": "09-07"},
            {"topic": "連鎖律", "level": "懂", "basis": "答對檢核", "stuck": "", "updated": "09-07"}
@@ -43,7 +43,7 @@ class CoursesParseTest {
         val c = l.courses[0]
         assertEquals("微積分（一）", c.title)
         assertEquals("course:微積分一", c.convId)
-        assertEquals("林育立", c.teacher)
+        assertEquals("陳老師", c.teacher)
         assertEquals(1, c.count("懂"))
         assertEquals(2, c.count("半懂"))
         assertEquals(0, c.count("不會"))
@@ -55,7 +55,7 @@ class CoursesParseTest {
     @Test
     fun `缺欄位不炸_標題退回名字`() {
         val p = parseCoursesList(list)!!.courses[1]
-        assertEquals("基礎物理", p.title)
+        assertEquals("線性代數", p.title)
         assertEquals("", p.teacher)
         assertEquals(0, p.count("懂"))
         assertTrue(p.agendaIds.isEmpty())
@@ -66,7 +66,7 @@ class CoursesParseTest {
     fun `詳情解析`() {
         val d = parseCourseDetail(detail)!!
         assertEquals("微積分（一）", d.info.title)
-        assertEquals("林育立", d.fields["老師"])
+        assertEquals("陳老師", d.fields["老師"])
         assertEquals(2, d.progress.size)
         assertEquals("半懂", d.progress[0].level)
         assertEquals("提問推斷", d.progress[0].basis)     // 原樣，不改寫

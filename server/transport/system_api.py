@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import config
 from .auth import require_token
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/system", tags=["system"])
 
@@ -131,26 +135,8 @@ async def restart(_: str = Depends(require_token)) -> dict[str, Any]:
     if not RESTART_PS1.is_file():
         raise HTTPException(status_code=500, detail=f"找不到重啟腳本：{RESTART_PS1}")
 
-    def _spawn() -> None:
-        subprocess.Popen(
-            [
-                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", str(RESTART_PS1),
-            ],
-            cwd=str(RESTART_PS1.parent),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            # 不繼承這邊的控制台，也不要因為父行程被殺就跟著死。
-            # CREATE_NO_WINDOW 是 2026-08-23 補的：伺服器自己是隱藏跑的，
-            # 沒有控制台可繼承，子行程於是自己開一個**看得見的**——按下重新啟動
-            # 就跳一個黑窗出來。腳本裡 WMI 那層也要各自設一次（見 restart_butler.ps1），
-            # 這個旗標只管得到直接生的這一個
-            creationflags=(
-                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-            ),
-        )
-
     busy = busy_convs()
-    await asyncio.to_thread(_spawn)
+    await asyncio.to_thread(_spawn_restart)
     return {
         "ok": True,
         # 有事在跑就要說：腳本會先等，等不到就硬幹，而那整段時間畫面上什麼都
@@ -164,3 +150,105 @@ async def restart(_: str = Depends(require_token)) -> dict[str, Any]:
             "重啟中，之後連線會自己接回來。"
         ),
     }
+
+
+def _spawn_restart() -> None:
+    """把重啟腳本投遞出去就走，不等它（見 restart）。"""
+    subprocess.Popen(
+        [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(RESTART_PS1),
+        ],
+        cwd=str(RESTART_PS1.parent),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        # 不繼承這邊的控制台，也不要因為父行程被殺就跟著死。
+        # CREATE_NO_WINDOW：伺服器自己是隱藏跑的，沒有控制台可繼承，
+        # 子行程於是自己開一個**看得見的**——按下重新啟動就跳一個黑窗出來。
+        # 腳本裡 WMI 那層也要各自設一次（見 restart_butler.ps1），
+        # 這個旗標只管得到直接生的這一個
+        creationflags=(
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        ),
+    )
+
+
+def _restart_peers() -> None:
+    """重啟共用這個 Python 環境的其他服務（config.PEER_RESTART，沒設就什麼都不做）。
+
+    透過 WMI 建立行程，讓它掛在 WmiPrvSE 底下、不在這棵行程樹裡：這個服務自己的
+    重啟腳本會把自己的子孫整串收掉，直接生的話對方重啟到一半就會被一起殺掉。
+
+    WMI 與 wscript 只有 Windows 有，其他平台設了也不做。"""
+    peer = config.PEER_RESTART
+    if sys.platform != "win32" or peer is None or not peer.is_file():
+        return
+    cmd = f"wscript.exe //B \"{peer}\""
+    ps = ("Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+          f"-Arguments @{{CommandLine='{cmd}'}} | Out-Null")
+    subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps], timeout=60,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   creationflags=subprocess.CREATE_NO_WINDOW)
+
+
+def restart_supported() -> bool:
+    """這台電腦能不能自己重啟服務：重啟腳本是 PowerShell，脫離行程樹靠的也是
+    Windows 的行程旗標（見 _spawn_restart）。其他平台要自己重啟。"""
+    return sys.platform == "win32" and RESTART_PS1.is_file()
+
+
+def _after_sdk_update() -> None:
+    """SDK 更新驗證通過：先重啟共用環境的其他服務，再重啟這個服務自己。
+
+    自己重啟不了就拋出去：sdk_update 會把工作標成 manual，App 才知道要到電腦上
+    手動重啟，而不是一直等一個不會發生的重啟。
+
+    其他服務重啟失敗只記下來、不往上拋：那跟這個服務自己能不能重啟是兩回事。
+    拋上去的話，這邊明明已經在重啟，工作卻被標成 manual，App 會叫人去電腦上手動重啟。"""
+    try:
+        _restart_peers()
+    except Exception:  # noqa: BLE001 — 逾時、WMI 失敗都一樣，別擋住自己的重啟
+        log.exception("重啟其他服務失敗")
+    if not restart_supported():
+        raise RuntimeError("這台電腦沒辦法自動重啟服務")
+    _spawn_restart()
+
+
+@router.get("/sdk")
+async def sdk_status(_: str = Depends(require_token)) -> dict[str, Any]:
+    """SDK／CLI 版本、有沒有新版、更新進度，以及哪些模型要新版才能用。"""
+    from engine import models, sdk_update
+
+    installed = sdk_update.installed_sdk()
+    cli = await asyncio.to_thread(sdk_update.cli_version)
+    latest = await asyncio.to_thread(sdk_update.latest)
+    job = sdk_update.job()
+    return {
+        "sdk": installed,
+        "cli": cli,
+        "latest": (latest or {}).get("version", ""),
+        "latest_released": (latest or {}).get("released", ""),
+        "update_available": bool(latest) and sdk_update.newer(latest["version"], installed),
+        "job": {"state": job.state, "step": job.step, "target": job.target,
+                "error": job.error},
+        # 清單上有、這版 CLI 跑不動的模型：工具頁拿來說明「為什麼要更新」
+        "blocked_models": [m.name for m in models.catalog() if not m.available],
+        # 更新完會不會自己重啟。不會的話 App 先講清楚「裝好要手動重啟」
+        "auto_restart": restart_supported(),
+    }
+
+
+@router.post("/sdk/update")
+async def sdk_update_start(_: str = Depends(require_token)) -> dict[str, Any]:
+    """開始更新到 PyPI 上的最新版。背景跑，進度用 GET /v1/system/sdk 看；
+    驗證通過後自動重啟（共用環境的其他服務，接著這個服務自己）。"""
+    from engine import sdk_update
+
+    latest = await asyncio.to_thread(sdk_update.latest)
+    if not latest:
+        raise HTTPException(status_code=503, detail="查不到最新版本，網路可能斷了")
+    target = latest["version"]
+    if not sdk_update.newer(target, sdk_update.installed_sdk()):
+        raise HTTPException(status_code=400, detail="已經是最新版")
+    if not sdk_update.start(target, _after_sdk_update):
+        raise HTTPException(status_code=409, detail="已經在更新了")
+    return {"ok": True, "target": target}

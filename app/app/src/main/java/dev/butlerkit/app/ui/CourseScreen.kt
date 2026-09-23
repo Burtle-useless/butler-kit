@@ -332,7 +332,7 @@ private fun CourseWorkspace(
         PillTabs(Ws.entries, tab, { it.label }, Accents.Course) { tab = it }
         HorizontalDivider(color = Palette.Line, thickness = 0.6.dp)
         when (tab) {
-            // 聊天畫面自己的報頭關掉：課名與返回鍵在上面那列，再疊一行標題是兩層報頭
+            // 聊天畫面自己的頂欄關掉：課名與返回鍵在上面那列，再疊一行標題是兩層頂欄
             Ws.Chat -> ChatScreen(
                 state = state,
                 title = info.title,
@@ -391,7 +391,7 @@ private fun CourseWorkspace(
     }
 }
 
-/** 工作區的報頭：返回鍵、課名、老師・教室；斷線時右邊印一句紅字（同聊天頁的做法）。 */
+/** 工作區的頂欄：返回鍵、課名、老師・教室；斷線時右邊印一句紅字（同聊天頁的做法）。 */
 @Composable
 private fun WsHeader(title: String, sub: String, connError: String?, onBack: () -> Unit) {
     Row(

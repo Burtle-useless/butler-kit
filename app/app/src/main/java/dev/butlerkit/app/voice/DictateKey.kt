@@ -83,7 +83,7 @@ fun DictateKey(onText: (String) -> Unit, modifier: Modifier = Modifier) {
 
     val listening = heard is Heard.Listening
     Box(
-        // 方框墨線，收音中換朱紅框——印刷風的按鈕是框不是圓（同輸入列其他鈕）
+        // 方框，收音中換成強調色的框；跟輸入列其他鈕一樣是框不是圓
         modifier.size(44.dp)
             .clip(Radii.Field)
             .background(if (listening) Palette.AccentSoft else Palette.Bg)

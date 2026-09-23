@@ -57,12 +57,25 @@ engine/      回合、session、工具、人格、狀態。不認識 HTTP
 `_clean_attachments`）。這是安全性不是潔癖：這個欄位是客戶端給的，直接信任等於
 讓任何配對過的裝置指定一個路徑叫模型去讀，那是整台電腦的任意檔案。
 
-兩件跟模型有關、會影響你怎麼回答使用者的事：
+三件跟模型有關、會影響你怎麼回答使用者的事：
 
-- **模型清單是向 CLI 要的**（`engine/models.py`），不是寫死的。CLI 的 initialize
-  回應本來就帶 `models`，`value` 是官方別名（`default`／`opus`／`sonnet`／`haiku`…），
-  直接當 `ClaudeAgentOptions.model` 用。清單快取在 `data/models.json`，一小時更新一次。
-  **CLI 升版就自己長出新模型，不要回頭改程式碼。** `DEFAULT_MODEL` 只是預設值。
+- **模型清單是向官方要的**（`engine/models.py`），不是寫死的。主來源是官方的
+  `GET /v1/models`（`engine/oauth_api.py` 拿 Claude Code 自己的 OAuth 登入去問）：
+  帳號能用的模型發佈當天就在上面，每顆帶顯示名、context 與支援的思考等級。
+  CLI initialize 回應裡的 `models` 退居輔助，只補「哪些系列開 1M context」與別名
+  （`default`／`opus[1m]`／`sonnet`…）現在解析成哪一顆。清單快取在
+  `data/models.json`，一小時更新一次。**不要回頭改程式碼補模型。**
+  `DEFAULT_MODEL` 只是預設值（預設是官方別名 `default`）。
+- **清單上有，不等於跑得動。** 新模型常要求較新的 CLI，後端會直接回 400
+  「does not support this model; version X or newer is required」（被擋時不花額度）。
+  SDK 把 CLI 打包在 wheel 裡，**不會自己更新**。比 CLI 自己清單裡最新那顆還新的模型，
+  伺服器會在背景各試跑一次，跑不動就標成 `available=false`＋`requires_cli`，App 選單
+  把它灰掉。使用者說新模型選不了、或回合撞到這個錯，就叫他到 App 的**工具頁**
+  「Claude Code」段按更新（`engine/sdk_update.py`：下載 → 備份 → 讓出執行中的
+  CLI → 安裝 → 試跑，沒過自動退回；通過就重啟服務。不是 Windows 的電腦沒辦法自己重啟，
+  工作會標成 `manual`，要到電腦上手動重啟才生效）。手動更新的做法：先停服務，
+  `pip install -U claude-agent-sdk`，再啟動——服務開著時 Windows 不准覆寫執行中的
+  `claude.exe`，pip 會裝到一半失敗。
 - **撞到 rate limit 會自動接回去**（`engine/errors.py` 的 `AUTO_RESUME_MAX_SEC`，
   預設 6 小時）：CLI 有給回復時刻、而且在門檻內的話，訊息留在佇列裡等額度回來
   自動重跑；超過門檻（例如週額度要等三天）才回報給使用者自己決定。
@@ -122,8 +135,9 @@ BUTLER_PERSONA=default      # 人格檔名，對應 server/personas/<名字>.txt
 BUTLER_NOTES_FILE=...       # 「失憶自救」要讀的筆記檔，留空＝關掉這條規則
 BUTLER_PLAN=max             # 訂閱方案，填 max/team 高階模型才拿得到 1M context
 CLAUDE_CLI=...              # 留空＝用 SDK 自帶的。要填就填原生執行檔，不能是 .cmd
-DEFAULT_MODEL=claude-sonnet-4-6   # 預設模型。可選的清單由 CLI 給，見上面的架構那節
+DEFAULT_MODEL=default       # 預設模型（官方別名＝官方當下建議的那顆）。清單向官方要，見上面的架構那節
 DEFAULT_EFFORT=medium       # 預設思考等級（low/medium/high/xhigh/max）
+BUTLER_PEER_RESTART=...     # 共用同一個 Python 環境的其他服務的重啟腳本（.vbs），從 App 更新 SDK 後一起重啟；留空＝只重啟自己
 ```
 
 ---

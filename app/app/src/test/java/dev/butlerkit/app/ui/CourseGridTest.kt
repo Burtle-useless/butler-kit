@@ -102,7 +102,7 @@ class CourseGridTest {
     fun `課名在冒號處截短_括號不動`() {
         // 通識課的全名是「分類：課名」，冒號**前面**是分類。取前面那段的話，
         // 同一個分類的幾門課在課表上都叫同一個名字，分不出哪一堂
-        assertEquals("社區服務學習", shortName("社會關懷：社區服務學習"))
+        assertEquals("志工服務與社區參與", shortName("通識：志工服務與社區參與"))
         assertEquals("音樂欣賞", shortName("通識:音樂欣賞"))
         // （一）是用來分班的，砍掉會認錯課
         assertEquals("微積分（一）", shortName("微積分（一）"))
@@ -127,45 +127,45 @@ class CourseGridTest {
     }
 
     private val periods = listOf(
-        Period(1, "08:30", "09:20"), Period(2, "09:25", "10:15"),
-        Period(3, "10:25", "11:15"), Period(4, "11:20", "12:10"),
+        Period(1, "08:10", "09:00"), Period(2, "09:10", "10:00"),
+        Period(3, "10:10", "11:00"), Period(4, "11:10", "12:00"),
         Period(5, "13:10", "14:00"), Period(6, "14:10", "15:00"),
     )
     private fun mins(h: Int, m: Int) = h * 60 + m
 
     @Test
     fun `現在在上課`() {
-        val todays = listOf(c("Matlab", 0, 2, 4), c("英文", 0, 5, 6))
+        val todays = listOf(c("Python", 4, 2, 4), c("英文簡報", 4, 5, 6))
         val now = nowSlot(periods, todays, mins(10, 30))     // 第 3 節
         assertEquals(3, now.period)
-        assertEquals("Matlab", now.current?.name)
-        assertEquals("英文", now.next?.name)
+        assertEquals("Python", now.current?.name)
+        assertEquals("英文簡報", now.next?.name)
         assertEquals("13:10", now.nextStart)
     }
 
     @Test
     fun `下課時間_period 是 null 但下一堂照算`() {
         // 剛下課最常看這行：想知道下一堂幾點、在哪
-        val todays = listOf(c("Matlab", 0, 2, 4), c("英文", 0, 5, 6))
+        val todays = listOf(c("Python", 4, 2, 4), c("英文簡報", 4, 5, 6))
         val now = nowSlot(periods, todays, mins(12, 30))
         assertNull(now.period)
         assertNull(now.current)
-        assertEquals("英文", now.next?.name)
+        assertEquals("英文簡報", now.next?.name)
     }
 
     @Test
     fun `今天課都上完了`() {
-        val now = nowSlot(periods, listOf(c("Matlab", 0, 2, 4)), mins(16, 0))
+        val now = nowSlot(periods, listOf(c("Python", 4, 2, 4)), mins(16, 0))
         assertNull(now.next)
         assertEquals("", now.nextStart)
     }
 
     @Test
     fun `空堂_有節次但沒課`() {
-        val now = nowSlot(periods, listOf(c("英文", 0, 5, 6)), mins(9, 0))   // 第 1 節沒課
+        val now = nowSlot(periods, listOf(c("英文簡報", 4, 5, 6)), mins(8, 30))   // 第 1 節沒課
         assertEquals(1, now.period)
         assertNull(now.current)
-        assertEquals("英文", now.next?.name)
+        assertEquals("英文簡報", now.next?.name)
     }
 
     // 課名對課程資料夾的比對 2026-09-07 搬到伺服器（test_courses_api.py 的名稱對照段）

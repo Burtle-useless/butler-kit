@@ -233,7 +233,7 @@ async def set_conv_settings(conv_id: str, payload: dict = Body(...),
         st.model = model or None
     if "effort" in payload:
         effort = str(payload.get("effort") or "")
-        if effort and effort not in model_catalog.ALL_EFFORTS:
+        if effort and not model_catalog.is_effort_known(effort):
             raise HTTPException(status_code=400, detail=f"unknown effort: {effort}")
         st.effort = effort or None
     state_mod.persist(st)

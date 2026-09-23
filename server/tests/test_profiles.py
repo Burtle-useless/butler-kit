@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config                                            # noqa: E402
-from engine import options, persona, plan_usage, profiles  # noqa: E402
+from engine import oauth_api, options, persona, plan_usage, profiles  # noqa: E402
 from engine.state import get_state                       # noqa: E402
 
 FAILED: list[str] = []
@@ -138,12 +138,12 @@ def test_limits() -> None:
 
     # 拿不到資料時必須是空陣列，不是例外
     plan_usage._cache.clear()
-    saved = plan_usage.CREDENTIALS
-    plan_usage.CREDENTIALS = Path("這個檔不存在.json")
+    saved = oauth_api.CREDENTIALS
+    oauth_api.CREDENTIALS = Path("這個檔不存在.json")
     try:
         check("讀不到憑證回空陣列", plan_usage.limits() == [])
     finally:
-        plan_usage.CREDENTIALS = saved
+        oauth_api.CREDENTIALS = saved
         plan_usage._cache.clear()
 
 

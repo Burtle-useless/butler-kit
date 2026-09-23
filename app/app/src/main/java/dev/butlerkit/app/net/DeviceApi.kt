@@ -8,6 +8,8 @@ interface DeviceApi {
     suspend fun reportLocation(body: JSONObject): Result<Unit>
     suspend fun systemStatus(): Result<SystemStatus>
     suspend fun restartSystem(): Result<Unit>
+    suspend fun sdkStatus(): Result<SdkStatus>
+    suspend fun updateSdk(): Result<Unit>
     suspend fun listDevices(): Result<List<DeviceInfo>>
     suspend fun revokeDevice(hash: String): Result<Unit>
 }
@@ -47,6 +49,33 @@ internal class DeviceApiImpl(core: ClientCore) : DeviceApi, ClientCore by core {
      */
     override suspend fun restartSystem(): Result<Unit> =
         post("/v1/system/restart", JSONObject())
+
+    /** Claude Code 的版本、有沒有新版、更新進度。 */
+    override suspend fun sdkStatus(): Result<SdkStatus> = getJson("/v1/system/sdk")
+        .mapCatching { o ->
+            val job = o.optJSONObject("job") ?: JSONObject()
+            SdkStatus(
+                sdk = o.optString("sdk"),
+                cli = o.optString("cli"),
+                latest = o.optString("latest"),
+                latestReleased = o.optString("latest_released"),
+                updateAvailable = o.optBoolean("update_available"),
+                jobState = job.optString("state", "idle"),
+                jobStep = job.optString("step"),
+                jobError = job.optString("error"),
+                blockedModels = o.optJSONArray("blocked_models")?.let { a ->
+                    (0 until a.length()).map { a.getString(it) }
+                }.orEmpty(),
+                autoRestart = o.optBoolean("auto_restart", true),
+            )
+        }
+
+    /**
+     * 開始更新 Claude Code。伺服器在背景下載、安裝、試跑，通過才換上並自動重啟；
+     * 進度用 [sdkStatus] 看。回成功只代表「開始了」。
+     */
+    override suspend fun updateSdk(): Result<Unit> =
+        post("/v1/system/sdk/update", JSONObject())
 
     // ── 已授權的裝置 ──────────────────────────────────────────────────────────
 

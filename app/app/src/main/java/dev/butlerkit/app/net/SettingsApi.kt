@@ -36,6 +36,13 @@ internal class SettingsApiImpl(core: ClientCore) : SettingsApi, ClientCore by co
                         description = m.optString("description"),
                         efforts = eff,
                         supportsEffort = m.optBoolean("supports_effort", eff.isNotEmpty()),
+                        family = m.optString("family"),
+                        tier = m.optString("tier").ifBlank { "main" },
+                        aliases = m.optJSONArray("aliases")?.let { a2 ->
+                            (0 until a2.length()).map { a2.getString(it) }
+                        }.orEmpty(),
+                        available = m.optBoolean("available", true),
+                        requiresCli = m.optString("requires_cli"),
                     )
                 }
             } ?: models.map { v ->
@@ -48,6 +55,7 @@ internal class SettingsApiImpl(core: ClientCore) : SettingsApi, ClientCore by co
                 efforts = arr("efforts"),
                 infos = infos,
                 confirmDangerous = o.optBoolean("confirm_dangerous", true),
+                builtinModel = o.optString("builtin_model").ifBlank { "default" },
             )
         }
 

@@ -11,9 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -54,102 +51,6 @@ import dev.butlerkit.app.net.ButlerClient
 import dev.butlerkit.app.net.OfferedFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-
-/**
- * 對話設定面板：另一個前端的 `/status`＋`/model_session`＋`/effort_session` 合成一頁。
- *
- * 這些在聊天平台上是三個要打字的指令，在這裡是頂欄一顆⚙。**覆寫是 per-conv 的**——
- * 「這條對話用 Opus 想深一點、其他維持 Sonnet」在那邊是常用操作，
- * App 端先前完全沒有入口，只能改全域預設把所有對話一起換掉。
- */
-@Composable
-internal fun ConvSettingsDialog(
-    state: ChatState,
-    onApply: (String?, String?) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val cs = state.convStatus
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("關閉", color = Palette.Accent) }
-        },
-        containerColor = Palette.Surface,
-        titleContentColor = Palette.Text,
-        textContentColor = Palette.TextDim,
-        title = {
-            Text("這條對話", fontSize = Type.Title, fontWeight = FontWeight.Bold)
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                if (cs == null) {
-                    Text("還沒拿到狀態。連上電腦之後再開一次。", fontSize = Type.Meta)
-                    return@Column
-                }
-                CtxBar(cs.ctxTokens, cs.ctxLimit)
-                Column {
-                    Text("工作目錄", color = Palette.TextDim, fontSize = Type.Tiny)
-                    Text(
-                        cs.cwd.ifBlank { "（預設）" },
-                        color = Palette.Text, fontSize = Type.Tiny,
-                        fontFamily = FontFamily.Monospace, maxLines = 2,
-                    )
-                }
-                // 模型與思考強度：一列摘要，點了開跟設定頁同一個面板（見 ModelPicker.kt）
-                val infos = state.settings?.infos.orEmpty()
-                var pick by remember { mutableStateOf(false) }
-                val modelText = modelDisplay(cs.modelOverride.ifBlank { cs.model }, infos) +
-                    if (cs.modelOverride.isBlank()) "（跟隨預設）" else ""
-                ModelSummaryRow(
-                    modelText = modelText.ifBlank { "（尚未取得）" },
-                    effortText = cs.effortOverride.ifBlank { cs.effort }.ifBlank { "預設" } +
-                        if (cs.effortOverride.isBlank()) "（跟隨預設）" else "",
-                ) { pick = true }
-                if (pick) {
-                    ModelPickerSheet(
-                        infos = infos,
-                        efforts = state.settings?.efforts.orEmpty(),
-                        selectedModel = cs.modelOverride,
-                        selectedEffort = cs.effortOverride,
-                        followLabel = "跟隨帳號預設",
-                        effectiveModel = cs.model,
-                        effectiveEffort = cs.effort,
-                        onPickModel = { onApply(it, null) },
-                        onPickEffort = { onApply(null, it) },
-                        onDismiss = { pick = false },
-                    )
-                }
-            }
-        },
-    )
-}
-
-/** context 用量長條。分母由伺服器給（隨模型變），不在前端寫死。 */
-@Composable
-private fun CtxBar(tokens: Int, limit: Int) = Column {
-    val frac = if (limit > 0) (tokens.toFloat() / limit).coerceIn(0f, 1f) else 0f
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text("context", color = Palette.TextDim, fontSize = Type.Tiny)
-        Text(
-            "%,d / %,d".format(tokens, limit),
-            color = Palette.TextDim, fontSize = Type.Tiny,
-            fontFamily = FontFamily.Monospace,
-        )
-    }
-    Box(
-        Modifier.fillMaxWidth().height(4.dp).padding(top = 1.dp)
-            .background(Palette.SurfaceHi, Radii.Chip),
-    ) {
-        Box(
-            Modifier.fillMaxWidth(frac).fillMaxHeight()
-                // 逼近 0.85 就會觸發自動壓縮，先變色當預告
-                .background(if (frac > 0.85f) Palette.Danger else Palette.Accent, Radii.Chip),
-        )
-    }
-}
 
 /**
  * 助理傳來的一個檔案。

@@ -214,7 +214,8 @@ internal class ConversationApiImpl(core: ClientCore) : ConversationApi, ClientCo
                     )
                 },
                 model = o.optString("model"),
-                effort = o.optString("effort"),
+                // 沒設思考強度時伺服器回 JSON null，optString 會把它變成字串 "null"
+                effort = if (o.isNull("effort")) "" else o.optString("effort"),
                 modelOverride = o.optString("model_override"),
                 effortOverride = o.optString("effort_override"),
                 cwd = o.optString("cwd"),

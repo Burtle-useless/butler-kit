@@ -2,6 +2,7 @@ package dev.butlerkit.app.ui
 
 import android.net.Uri
 import android.os.SystemClock
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
@@ -68,6 +69,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -141,6 +143,8 @@ fun ChatScreen(
     onConvSettings: (String?, String?) -> Unit,
     /** 捲到最上面那列「載入更早」時往前翻一頁（見 ChatViewModel.loadOlder）。 */
     onLoadOlder: () -> Unit,
+    /** 模型面板裡點了「去更新」：換到工具頁的 Claude Code 那段。 */
+    onOpenTools: () -> Unit = {},
 ) {
     // 每條對話各自一份捲動狀態。共用一份的話，從一條長對話切到另一條短的，
     // 新對話會直接停在上一條的捲動位置——短的那條根本沒那麼多內容，看到的是空白。
@@ -335,6 +339,7 @@ fun ChatScreen(
             onPickFile = { showPicker = true },
             onRemoveAttach = onRemoveAttach,
             onConvSettings = onConvSettings,
+            onOpenTools = onOpenTools,
             onLoadOlder = onLoadOlder,
         )
     }
@@ -491,6 +496,7 @@ private fun ChatBody(
     onRemoveAttach: (String) -> Unit,
     onConvSettings: (String?, String?) -> Unit,
     onLoadOlder: () -> Unit,
+    onOpenTools: () -> Unit,
 ) {
     // 工作頁一條對話都還沒有時，currentConv 會停在別人那條（剛從助理切過來）——
     // 直接顯示會把別人的對話端到工作頁上，所以擋掉改顯示空狀態
@@ -515,18 +521,41 @@ private fun ChatBody(
     // 拿原始字串判斷會畫出一顆沒有內容的空氣泡。
     val preview = remember(state.streaming) { state.previewText }
 
-    var showConvSettings by remember { mutableStateOf(false) }
-    if (showConvSettings) {
-        ConvSettingsDialog(
-            state = state,
-            onApply = onConvSettings,
-            onDismiss = { showConvSettings = false },
+    // 模型鈕直接開面板，不再先開一個「這條對話」框再點一層。context 與工作目錄
+    // 跟著搬進面板底部
+    var showModelPicker by remember { mutableStateOf(false) }
+    val convStatus = state.convStatus
+    if (showModelPicker && convStatus != null) {
+        val settings = state.settings
+        ModelPickerSheet(
+            infos = settings?.infos.orEmpty(),
+            scope = PickScope.Conv,
+            selectedModel = convStatus.modelOverride,
+            selectedEffort = convStatus.effortOverride,
+            // 跟隨的話拿到的是帳號預設；帳號也沒設就是伺服器的內建預設
+            followModel = settings?.model ?: settings?.builtinModel ?: "default",
+            followEffort = settings?.effort.orEmpty(),
+            onPickModel = { onConvSettings(it, null) },
+            onPickEffort = { onConvSettings(null, it) },
+            onNeedUpdate = onOpenTools,
+            onDismiss = { showModelPicker = false },
+            footer = { ConvStatusFooter(convStatus) },
         )
     }
 
     Column(Modifier.fillMaxSize().background(Palette.Bg).imePadding()) {
         if (showTopBar) {
-            ChatTopBar(state, title, multiConv, onOpenDrawer) { showConvSettings = true }
+            val ctx = LocalContext.current
+            // 還沒拿到這條對話的狀態就先不開：開了會等狀態到了才突然彈出來。
+            // 但要說一聲，按了沒反應看起來像鈕壞了
+            ChatTopBar(state, title, multiConv, onOpenDrawer) {
+                if (state.convStatus != null) {
+                    showModelPicker = true
+                } else {
+                    Toast.makeText(ctx, "還沒拿到這條對話的狀態，連上電腦之後再開一次。", Toast.LENGTH_SHORT)
+                        .show()
+                }
+            }
         }
         HorizontalDivider(color = Palette.Line, thickness = 0.6.dp)
 
@@ -775,14 +804,14 @@ private fun NoConvPlaceholder(title: String, onNewConv: () -> Unit) = Column(
     )
 }
 
-/** 緊湊頂欄：☰ 開抽屜（僅多對話頁）＋標題＋⚙ 對話設定＋連線點。 */
+/** 緊湊頂欄：☰ 開抽屜（僅多對話頁）＋標題＋連線狀態＋⚙ 這條對話的模型。 */
 @Composable
 private fun ChatTopBar(
     state: ChatState,
     title: String,
     multiConv: Boolean,
     onOpenDrawer: () -> Unit,
-    onOpenSettings: () -> Unit,
+    onOpenModel: () -> Unit,
 ) {
     // 助理頁固定顯示「助理」；工作頁顯示當前對話的標題
     val currentTitle = when {
@@ -792,7 +821,7 @@ private fun ChatTopBar(
             .firstOrNull { it.id == state.currentConv }?.title ?: state.currentConv
     }
 
-    // 報頭：標題行，底下壓一粗一細的雙規線。
+    // 頂欄：標題行，底下壓一粗一細兩條線。
     Column(Modifier.fillMaxWidth().padding(horizontal = Space.Screen)) {
         Row(
             // heightIn 不是 height：系統字級調大時標題會需要更高的一列，
@@ -835,11 +864,11 @@ private fun ChatTopBar(
                     modifier = Modifier.padding(end = 6.dp),
                 )
             }
-            // 對話設定（模型／思考強度／context）。整條頂欄本身是開抽屜的觸控區，
-            // 這顆要自己的 clickable 才不會被外層吃掉。
-            IconBtn(Icons.Filled.Settings, "對話設定", onClick = onOpenSettings)
+            // 這條對話的模型與思考強度：點了直接開面板（context 與工作目錄在面板底下）。
+            // 整條頂欄本身是開抽屜的觸控區，這顆要自己的 clickable 才不會被外層吃掉。
+            IconBtn(Icons.Filled.Settings, "這條對話的模型與思考強度", onClick = onOpenModel)
         }
-        // 雙規線：粗上細下，報頭的落款
+        // 兩條線：粗上細下
         Box(Modifier.fillMaxWidth().height(2.dp).background(Palette.Text))
         Spacer(Modifier.height(2.dp))
         Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Line))

@@ -46,8 +46,8 @@ INDEX_MD = """# 微積分（一）
 |---|---|
 | 老師 | 陳老師 |
 | 教室 | A203 |
-| 時段 | 週三 第1節、週四 第5-6節 |
-| 備註 | 必修 3 學分 |
+| 時段 | 週二 第2節、週五 第5-6節 |
+| 備註 | 必修 |
 
 > 課表以伺服器的 agenda.json 為準。
 
@@ -84,25 +84,25 @@ LOG_MD = """# 微積分（一） 提問紀錄
 | 09-07 10:15 | 連鎖律 | 外導乘內導的內導是什麼 | 講完自己算對了 |
 """
 
-# 真實的 115-1 課表課名（agenda.json 那份），對照真實的資料夾名
+# 一份典型的課表課名，對照人手取的資料夾名
 AGENDA = {"courses": [
-    {"id": "c1", "name": "微積分（一）", "day": 2, "from_period": 1, "to_period": 1},
-    {"id": "c2", "name": "微積分（一）", "day": 3, "from_period": 5, "to_period": 6},
-    {"id": "c3", "name": "線性代數", "day": 0, "from_period": 7, "to_period": 9},
-    {"id": "c4", "name": "通識：生活中的天文學", "day": 2, "from_period": 5, "to_period": 6},
-    {"id": "c5", "name": "通識：音樂欣賞與創作", "day": 3, "from_period": 7, "to_period": 8},
-    {"id": "c6", "name": "普通化學與實驗（一）", "day": 1, "from_period": 2, "to_period": 4},
-    {"id": "c7", "name": "社會關懷：社區服務學習", "day": 4, "from_period": 1, "to_period": 2},
-    {"id": "c8", "name": "Python 程式設計", "day": 0, "from_period": 2, "to_period": 4},
-    {"id": "c9", "name": "體育（二）", "day": 4, "from_period": 3, "to_period": 4},
-    {"id": "c10", "name": "英文簡報", "day": 0, "from_period": 5, "to_period": 6},
+    {"id": "c1", "name": "微積分（一）", "day": 1, "from_period": 2, "to_period": 2},
+    {"id": "c2", "name": "微積分（一）", "day": 4, "from_period": 5, "to_period": 6},
+    {"id": "c3", "name": "線性代數", "day": 1, "from_period": 7, "to_period": 8},
+    {"id": "c4", "name": "通識：生活中的天文學", "day": 0, "from_period": 3, "to_period": 4},
+    {"id": "c5", "name": "通識：音樂欣賞與創作", "day": 2, "from_period": 7, "to_period": 8},
+    {"id": "c6", "name": "普通化學與實驗（一）", "day": 3, "from_period": 2, "to_period": 4},
+    {"id": "c7", "name": "通識：志工服務與社區參與", "day": 0, "from_period": 1, "to_period": 2},
+    {"id": "c8", "name": "Python 程式設計", "day": 2, "from_period": 2, "to_period": 4},
+    {"id": "c9", "name": "體育（二）", "day": 1, "from_period": 5, "to_period": 6},
+    {"id": "c10", "name": "英文簡報", "day": 4, "from_period": 7, "to_period": 8},
 ], "periods": []}
 
 PAIRS = [
     ("Python程式設計", "Python 程式設計"),
     ("普通化學實驗一", "普通化學與實驗（一）"),
     ("微積分一", "微積分（一）"),
-    ("服務學習", "社會關懷：社區服務學習"),
+    ("志工服務", "通識：志工服務與社區參與"),
     ("天文學", "通識：生活中的天文學"),
     ("音樂欣賞", "通識：音樂欣賞與創作"),
     ("線性代數", "線性代數"),
@@ -135,7 +135,7 @@ def setup() -> None:
 def main() -> int:
     setup()
 
-    print("名稱對照（真實的八門課）")
+    print("名稱對照（八門課）")
     for folder, agenda_name in PAIRS:
         check(f"{folder} ↔ {agenda_name}", courses_api.names_match(folder, agenda_name))
     check("音樂欣賞 不對到 天文學那門",
@@ -150,7 +150,7 @@ def main() -> int:
     idx = courses_api.parse_index(INDEX_MD)
     check("標題", idx["title"] == "微積分（一）", idx["title"])
     check("老師", idx["info"].get("老師") == "陳老師")
-    check("時段", idx["info"].get("時段", "").startswith("週三"))
+    check("時段", idx["info"].get("時段", "").startswith("週二"))
     check("進度三列（壞程度那列略過）", len(idx["progress"]) == 3, str(idx["progress"]))
     check("進度欄位", idx["progress"][0] == {
         "topic": "極限的 ε-δ 定義", "level": "半懂", "basis": "提問推斷",

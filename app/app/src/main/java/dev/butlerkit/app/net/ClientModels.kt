@@ -127,6 +127,24 @@ data class SystemStatus(
 )
 
 /**
+ * 電腦上 Claude Code（SDK 自帶的那支）的版本與更新進度（`GET /v1/system/sdk`）。
+ * [jobState]：idle／running／done／manual（裝好了但服務沒辦法自己重啟）／failed。
+ * [blockedModels]：清單上有、這版跑不動的模型。[autoRestart]：更新完服務會不會自己重啟。
+ */
+data class SdkStatus(
+    val sdk: String,
+    val cli: String,
+    val latest: String,
+    val latestReleased: String,
+    val updateAvailable: Boolean,
+    val jobState: String,
+    val jobStep: String,
+    val jobError: String,
+    val blockedModels: List<String>,
+    val autoRestart: Boolean = true,
+)
+
+/**
  * 一台配對過的裝置。
  *
  * [hash] 是 token 的 SHA-256，**它本身不是憑證**——伺服器從來沒存過明文，
@@ -193,16 +211,21 @@ data class Snapshot(
 data class HistoryPage(val messages: List<HistoryMsg>, val hasMore: Boolean)
 
 /**
- * 一個可選的模型。對應伺服器 `engine/models.ModelInfo.to_wire()`，內容來自 CLI 的
- * initialize 回應（官方 app 的選單就是這份），CLI 升版清單自己會長。
+ * 一個可選的模型。對應伺服器 `engine/models.ModelInfo.to_wire()`，內容來自官方的
+ * `/v1/models`（伺服器向官方要），官方一發佈清單自己會長，App 不寫死任何型號。
  */
 data class ModelInfo(
-    val value: String,          // 給設定用的值（default／opus[1m]／sonnet…）
-    val resolved: String,       // 實際會跑的模型 id
-    val name: String,           // 顯示名
+    val value: String,          // 給設定用的值（claude-opus-5-5[1m]…）
+    val resolved: String,       // 官方 id（不帶 [1m]）
+    val name: String,           // 顯示名（Opus 5.5）
     val description: String,
     val efforts: List<String>,  // 這個模型能選的思考等級；空＝不支援
     val supportsEffort: Boolean,
+    val family: String = "",    // opus／fable／sonnet／haiku
+    val tier: String = "main",  // main＝各系列最新那顆；more＝收進「更多模型」
+    val aliases: List<String> = emptyList(),   // 其他會對到這顆的值（opus[1m]、default…）
+    val available: Boolean = true,             // false＝電腦上的 Claude Code 太舊，跑不動
+    val requiresCli: String = "",              // 跑不動的話要哪一版以上
 )
 
 data class SettingsInfo(
@@ -216,4 +239,9 @@ data class SettingsInfo(
      * App 只能看不能改）。舊伺服器沒這個欄位時視為開著——那是安全的那一邊。
      */
     val confirmDangerous: Boolean = true,
+    /**
+     * 帳號預設沒設時實際用的模型（伺服器的 DEFAULT_MODEL）。`default` 是官方別名＝
+     * 官方建議的那顆；部署者用環境變數改掉的話就是別的值。舊伺服器沒給就當 `default`。
+     */
+    val builtinModel: String = "default",
 )

@@ -91,7 +91,7 @@ def course_dirs() -> list[Path]:
 
 
 def slot_label(rows: list[dict[str, Any]], periods: list[dict[str, Any]]) -> str:
-    """「週三 第1節（08:30-09:20）、週四 第5-6節（13:30-15:15）」。"""
+    """「週二 第2節（09:10-10:00）、週五 第5-6節（13:10-15:00）」。"""
     span = {p.get("no"): p for p in periods}
     parts: list[str] = []
     for c in sorted(rows, key=lambda r: (r.get("day", 0), r.get("from_period", 0))):

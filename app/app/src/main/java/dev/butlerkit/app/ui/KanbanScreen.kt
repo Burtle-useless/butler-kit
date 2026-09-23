@@ -42,17 +42,17 @@ import dev.butlerkit.app.net.KanbanColumn
 import kotlinx.coroutines.launch
 
 /**
- * 看板：報紙分版——一屏一欄，欄與欄橫著翻。
+ * 看板：一屏一欄，欄與欄橫著翻。
  *
- * 2026-08-19 重寫。前一版把三欄攤平在同一條清單、每件工作壓成 44dp 單行、
+ * 重寫過一次。前一版把三欄攤平在同一條清單、每件工作壓成 44dp 單行、
  * 靠長按拖放（位移÷行高）換算落點，實際用起來很難對準。查了行動版
  * 看板的通行做法之後照三條原則重做：
  *
  * 1. **一次只看一欄。** 手機一屏擺不下三欄，攤平混在一起等於哪欄都看不清。
- *    改成 HorizontalPager 一欄一頁，頂上是帶數字的版面索引（像報紙頭版的
- *    目錄），點索引或橫滑都能換欄。
- * 2. **條目要不用點開就讀得懂。** 標題一到兩行襯線字、備註跟在下面、
- *    急件是紅框「急」章。不再為了拖放把每列鎖成等高單行。
+ *    改成 HorizontalPager 一欄一頁，頂上是帶數字的欄位索引，
+ *    點索引或橫滑都能換欄。
+ * 2. **條目要不用點開就讀得懂。** 標題一到兩行、備註跟在下面、
+ *    急件前面標一個「急」字。不再為了拖放把每列鎖成等高單行。
  * 3. **換欄用明確的按鈕，不用拖放。** 每一條右邊就是它的下一步
  *    （待辦→「開工」、進行中→「完成」），一下就按到。拖放在手機上是
  *    出了名的難用——會誤觸、會跟捲動打架，而舊版靠行高換算落點的做法
@@ -83,7 +83,7 @@ fun KanbanScreen(client: ButlerClient) {
     val pager = rememberPagerState(pageCount = { if (columns.isEmpty()) 3 else columns.size })
 
     Column(Modifier.fillMaxSize()) {
-        // ── 版面索引：欄名＋張數，選中的黑底反白（報紙目錄）─────────────
+        // ── 欄位索引：欄名＋張數，選中的黑底反白 ─────────────────────
         Row(
             Modifier.fillMaxWidth().padding(horizontal = Space.Screen),
             verticalAlignment = Alignment.CenterVertically,
@@ -114,10 +114,9 @@ fun KanbanScreen(client: ButlerClient) {
                 }
             }
             Spacer(Modifier.weight(1f))
-            // 新增走報紙的語彙：「刊登」。FAB 那顆浮著的圓鈕是 Material 的東西，
-            // 而且會遮住清單最後一條
+            // 新增放在索引列右邊，不用 FAB：浮著的圓鈕會遮住清單最後一條
             Text(
-                "＋刊登",
+                "＋新增",
                 color = Palette.Accent,
                 fontSize = Type.Meta,
                 fontFamily = FontFamily.SansSerif,
@@ -126,7 +125,7 @@ fun KanbanScreen(client: ButlerClient) {
                     .padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
-        // 粗規線把索引跟內文分開（報頭下那條）
+        // 粗線把索引跟內文分開
         Box(
             Modifier.fillMaxWidth().padding(horizontal = Space.Screen)
                 .height(2.dp).background(Palette.Text),
@@ -137,7 +136,7 @@ fun KanbanScreen(client: ButlerClient) {
             loading -> Center { Text("載入中…", color = Palette.TextFaint, fontSize = Type.Body) }
             columns.all { it.total == 0 } -> Center {
                 Text(
-                    "版面還是空的。右上角刊登一件工作，\n或直接跟助理說你要做什麼。",
+                    "還沒有工作。右上角新增一件，\n或直接跟助理說你要做什麼。",
                     color = Palette.TextFaint, fontSize = Type.Body,
                     lineHeight = Type.BodyLine, textAlign = TextAlign.Center,
                 )
@@ -239,7 +238,7 @@ private fun ColumnPage(
 }
 
 /**
- * 一件工作＝一則簡訊欄條目：標題（襯線）、備註（縮灰）、右側下一步按鈕。
+ * 一件工作＝一列：標題、備註（縮灰）、右側下一步按鈕。
  * 高度隨內容走，不再鎖 44dp——可讀比可拖重要。
  */
 @Composable
@@ -253,7 +252,7 @@ private fun Entry(card: KanbanCard, onOpen: () -> Unit, onAdvance: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (card.urgent && !done) {
-                    // 紅框「急」章。報紙的標籤是方框字，不是圓 chip
+                    // 急件標一個方框「急」字，不用圓角 chip
                     Text(
                         "急",
                         color = Palette.Accent, fontSize = Type.Tiny,
@@ -270,7 +269,7 @@ private fun Entry(card: KanbanCard, onOpen: () -> Unit, onAdvance: () -> Unit) {
                     fontSize = Type.Body,
                     lineHeight = Type.BodyLine,
                     maxLines = 2,
-                    // 完成的條目劃掉——印刷品的「做完了」就是一條線
+                    // 完成的條目劃掉
                     textDecoration = if (done) TextDecoration.LineThrough else null,
                 )
             }
@@ -327,7 +326,7 @@ private fun AddSheet(
             Modifier.fillMaxWidth().padding(horizontal = Space.Screen, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("刊登一件工作", color = Palette.Text, fontSize = Type.Head,
+            Text("新增一件工作", color = Palette.Text, fontSize = Type.Head,
                 fontWeight = FontWeight.Bold)
 
             Field(title, "像「助理－看板重寫」這樣寫") { title = it }
@@ -393,7 +392,7 @@ private fun EditSheet(
     }
 }
 
-/** 三個版面的橫排選擇器，新增與編輯共用。選中＝黑底反白。 */
+/** 三個欄位的橫排選擇器，新增與編輯共用。選中＝黑底反白。 */
 @Composable
 private fun StatusPicker(current: String, onPick: (String) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -443,4 +442,4 @@ private fun UrgentToggle(urgent: Boolean, onToggle: () -> Unit) {
     }
 }
 
-// 輸入框走 Components.kt 的 Field，跟其他頁同一種長相（2026-09-03 收斂）
+// 輸入框走 Components.kt 的 Field，跟其他頁同一種長相

@@ -210,8 +210,8 @@ class WidgetLogicTest {
     fun `剩不到一小時講分鐘、超過就講幾點下課`() {
         assertEquals("還有 25 分", remainText(nowMin = 9 * 60 + 35, endMin = 10 * 60))
         assertEquals("還有 60 分", remainText(nowMin = 9 * 60, endMin = 10 * 60))
-        // 三節連上：09:50 到 12:10 還有 140 分，寫分鐘要人心算
-        assertEquals("到 12:10", remainText(nowMin = 9 * 60 + 50, endMin = 12 * 60 + 10))
+        // 三節連上：09:50 到 12:00 還有 130 分，寫分鐘要人心算
+        assertEquals("到 12:00", remainText(nowMin = 9 * 60 + 50, endMin = 12 * 60))
     }
 
     // ── 整週網格：節次軸上的「現在」 ────────────────────────────────────────
@@ -269,13 +269,13 @@ class WidgetLogicTest {
     fun `上課中與上課前一小時每五分鐘重畫一次`() {
         val data = dev.butlerkit.app.net.AgendaData(
             courses = listOf(course("程式設計", day = 2, from = 2, to = 2)),
-            periods = listOf(Period(1, "08:30", "09:20"), Period(2, "09:25", "10:15")),
+            periods = listOf(Period(1, "08:10", "09:00"), Period(2, "09:10", "10:00")),
         )
         val marks = WidgetTick.progressMarks(data, todayIdx = 2)
-        assertTrue("上課中每五分鐘", 9 * 60 + 30 in marks && 10 * 60 + 10 in marks)
-        assertTrue("下課那一刻是節次交界，不歸這裡", 10 * 60 + 15 !in marks)
-        assertTrue("上課前一小時開始倒數", 8 * 60 + 25 in marks && 9 * 60 + 20 in marks)
-        assertTrue("開始那一刻也是交界", 9 * 60 + 25 !in marks)
+        assertTrue("上課中每五分鐘", 9 * 60 + 30 in marks && 9 * 60 + 55 in marks)
+        assertTrue("下課那一刻是節次交界，不歸這裡", 10 * 60 !in marks)
+        assertTrue("上課前一小時開始倒數", 8 * 60 + 10 in marks && 9 * 60 + 5 in marks)
+        assertTrue("開始那一刻也是交界", 9 * 60 + 10 !in marks)
         assertTrue("別天的課不排", WidgetTick.progressMarks(data, todayIdx = 3).isEmpty())
     }
 }

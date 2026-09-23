@@ -2,7 +2,10 @@ package dev.butlerkit.app.ui
 
 import android.content.Intent
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +26,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -45,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.butlerkit.app.BuildConfig
 import dev.butlerkit.app.net.ButlerClient
+import dev.butlerkit.app.net.SdkStatus
 import dev.butlerkit.app.net.SearchHit
 import dev.butlerkit.app.net.SystemStatus
 import dev.butlerkit.app.net.humanError
@@ -59,7 +64,13 @@ import kotlinx.coroutines.withContext
  * Phase 3 先有截圖；之後的工具照同樣的區塊模式往下加。
  */
 @Composable
-fun ToolsScreen(client: ButlerClient, onOpenSettings: () -> Unit) {
+fun ToolsScreen(
+    client: ButlerClient,
+    /** 從模型面板的「去更新」過來：捲到 Claude Code 那段。 */
+    focusSdk: Boolean = false,
+    onFocused: () -> Unit = {},
+    onOpenSettings: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     var shot by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -67,6 +78,9 @@ fun ToolsScreen(client: ButlerClient, onOpenSettings: () -> Unit) {
 
     // 工具 / 看板 切換。rememberSaveable 讓切分頁再回來時停在上次的選擇。
     var showKanban by rememberSaveable { mutableStateOf(false) }
+    // 從模型面板的「去更新」過來時上次停在看板的話，Claude Code 那段根本沒組合，
+    // 捲不過去；focusSdk 也會一直掛著，等哪天切回工具才突然自己捲下去
+    LaunchedEffect(focusSdk) { if (focusSdk) showKanban = false }
 
     // 標題列：「工具 | 看板」切換器 ＋ 設定齒輪
     // 切到看板時整個捲動列表換成 KanbanScreen，標題列仍然固定在頂部。
@@ -78,8 +92,7 @@ fun ToolsScreen(client: ButlerClient, onOpenSettings: () -> Unit) {
                 .padding(top = 20.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 工具 / 看板 切換。選中＝黑底反白（報紙的版名章），
-            // 不用 Material 那種淡色膠囊——那是這一版要甩掉的東西
+            // 工具 / 看板 切換。選中＝黑底反白，不用 Material 那種淡色膠囊
             Row(Modifier.weight(1f).border(1.dp, Palette.Text)) {
                 listOf(false to "工具", true to "看板").forEach { (isKanban, label) ->
                     val selected = showKanban == isKanban
@@ -245,6 +258,9 @@ fun ToolsScreen(client: ButlerClient, onOpenSettings: () -> Unit) {
 
         // ── 服務控制台 ──────────────────────────────────────────────
         ServiceSection(client)
+
+        // ── Claude Code 版本與更新 ─────────────────────────────────
+        SdkSection(client, focus = focusSdk, onFocused = onFocused)
 
         // 各段落都以分隔線開頭，這條是收尾——少了它最後一段會看起來沒結束
         HorizontalDivider(color = Palette.Line, thickness = 0.6.dp)
@@ -414,6 +430,195 @@ private fun ServiceSection(client: ButlerClient) {
                 }
             }
         }
+    }
+}
+
+/** 更新完等服務接回來最多等多久。正常重啟兩三分鐘，超過這個多半是沒被拉起來。 */
+private const val RESTART_WAIT_MS = 5 * 60_000L
+
+/**
+ * 電腦上 Claude Code 的版本與一鍵更新。
+ *
+ * **為什麼要有這段。** 官方發新模型時常常要較新的 Claude Code 才跑得動（後端會直接
+ * 回「這個模型要某版以上」），而伺服器用的那支是跟著 SDK 打包的，不會像官方終端機
+ * 那樣自己更新。沒有這段的話，每次都得有人坐到電腦前手動升級；現在有新版這裡會
+ * 提示，按一下伺服器自己下載、安裝、試跑，通過才換上，沒過就退回原本那版。
+ * 換好之後服務會自己重新啟動一次；沒辦法自己重啟的電腦（不是 Windows）會講明要手動重啟。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SdkSection(client: ButlerClient, focus: Boolean, onFocused: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    // 從模型面板的「去更新」過來：這段在頁面最底下，等版本資料回來、這段撐開了
+    // 才捲進畫面——先捲的話高度還沒到位，會停在半路
+    val here = remember { BringIntoViewRequester() }
+    var st by remember { mutableStateOf<SdkStatus?>(null) }
+    var err by remember { mutableStateOf<String?>(null) }
+    // 兩段式確認。更新完會重啟服務、中斷進行中的工作，不該一下就按到。
+    var arming by remember { mutableStateOf(false) }
+    var starting by remember { mutableStateOf(false) }
+    var reload by remember { mutableStateOf(0) }
+    // 上一次問完（成功或失敗都算）就加一。輪詢掛在這上面而不是 reload：掛 reload 的話
+    // 不管上一次問完沒有，兩秒一到就再問一次、把進行中的那次取消掉——請求只要慢過
+    // 兩秒（連不到電腦時要等連線逾時），就一次都跑不完，底下還一直留著卡到逾時的連線
+    var fetched by remember { mutableStateOf(0) }
+    // 更新跑完伺服器會重啟，那段時間問不到東西。記住「剛剛在更新」，
+    // 問不到時顯示「重新啟動中」而不是紅字
+    var restarting by remember { mutableStateOf(false) }
+    // 重啟腳本失敗、或服務被收掉後沒被拉起來時，伺服器那份工作會一直停在 done——
+    // 不設上限的話這裡會永遠轉圈、每兩秒打一次 API
+    var restartStuck by remember { mutableStateOf(false) }
+
+    LaunchedEffect(reload) {
+        client.sdkStatus()
+            .onSuccess {
+                st = it; err = null
+                if (it.jobState == "done") {
+                    if (!restartStuck) restarting = true
+                } else if (it.jobState != "running") {
+                    restarting = false
+                    restartStuck = false
+                }
+            }
+            .onFailure { if (!restarting) err = humanError(it) }
+        fetched++
+    }
+    // 等重啟的上限自己計時，不等哪一次請求跑完才檢查：連不到電腦時請求本身就要等到
+    // 逾時，把檢查放在請求後面的話上限可能永遠輪不到
+    LaunchedEffect(restarting) {
+        if (restarting) {
+            delay(RESTART_WAIT_MS)
+            restarting = false
+            restartStuck = true
+        }
+    }
+    // 更新中或重啟中就問進度：上一次問完隔兩秒再問下一次
+    val polling = restarting || st?.jobState == "running"
+    LaunchedEffect(polling, fetched) {
+        if (polling) {
+            delay(2_000)
+            reload++
+        }
+    }
+    LaunchedEffect(focus, st != null || err != null) {
+        if (focus && (st != null || err != null)) {
+            delay(120)                     // 等這一幀排完版
+            here.bringIntoView()
+            onFocused()
+        }
+    }
+
+    Column(Modifier.bringIntoViewRequester(here)) {
+    ToolSection(
+        title = "Claude Code",
+        subtitle = "助理背後那支程式的版本",
+        howTo = "官方出新模型時，常常要較新的 Claude Code 才跑得動。這裡有新版會提示，" +
+            "按更新會下載大約 100 MB，裝好先試跑一次，通過才換上，沒過就退回原本那版。" +
+            if (st?.autoRestart == false) {
+                "這台電腦沒辦法自己重新啟動服務，裝好後要到電腦上手動重啟一次才會生效。"
+            } else {
+                "換好之後服務會自己重新啟動一次，前後兩三分鐘，進行中的工作會被中斷。"
+            },
+    ) {
+        val s = st
+        if (s != null) {
+            Text(
+                "版本 ${s.cli.ifBlank { "?" }}（SDK ${s.sdk}）",
+                color = Palette.Text, fontSize = Type.Body,
+            )
+        }
+        when {
+            restarting -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(
+                    color = Palette.Accent, strokeWidth = 2.dp, modifier = Modifier.size(16.dp),
+                )
+                Text("更新好了，正在重新啟動…", color = Palette.TextDim, fontSize = Type.Meta)
+            }
+            restartStuck -> {
+                Text(
+                    "服務還沒接回來，可能要到電腦上手動啟動。",
+                    color = Palette.Danger, fontSize = Type.Meta, lineHeight = Type.MetaLine,
+                )
+                PillButton("再檢查一次") {
+                    restartStuck = false
+                    reload++
+                }
+            }
+            // 新版裝好了，但伺服器沒辦法自己重啟（沒有重啟腳本、不是 Windows）
+            s?.jobState == "manual" -> Text(
+                "新版已經裝好，但這台電腦沒辦法自己重新啟動服務，要到電腦上手動重啟一次才會生效。",
+                color = Palette.Danger, fontSize = Type.Meta, lineHeight = Type.MetaLine,
+            )
+            s?.jobState == "running" -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(
+                    color = Palette.Accent, strokeWidth = 2.dp, modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    "更新到 ${s.latest}：${s.jobStep.ifBlank { "處理中" }}",
+                    color = Palette.TextDim, fontSize = Type.Meta,
+                )
+            }
+            s != null && s.updateAvailable -> {
+                Text(
+                    "有新版 SDK ${s.latest}" +
+                        (s.latestReleased.takeIf { it.length >= 10 }
+                            ?.let { "（${it.substring(5, 7).toInt()}/${it.substring(8, 10).toInt()} 發布）" }
+                            .orEmpty()),
+                    color = Palette.Accent, fontSize = Type.Meta, lineHeight = Type.MetaLine,
+                )
+                if (s.blockedModels.isNotEmpty()) {
+                    Text(
+                        "${s.blockedModels.joinToString("、")} 要新版才能用",
+                        color = Palette.TextDim, fontSize = Type.Meta, lineHeight = Type.MetaLine,
+                    )
+                }
+                if (s.jobState == "failed" && s.jobError.isNotBlank()) {
+                    Text(
+                        "上次沒更新成功，已經退回原本那版：${s.jobError}",
+                        color = Palette.Danger, fontSize = Type.Meta, lineHeight = Type.MetaLine,
+                    )
+                }
+                if (!arming) {
+                    PillButton(
+                        if (s.jobState == "failed") "再試一次" else "更新",
+                        loading = starting,
+                    ) { arming = true }
+                } else {
+                    Text(
+                        if (s.autoRestart) {
+                            "會下載大約 100 MB，裝好後服務會重新啟動一次，進行中的工作會被中斷。"
+                        } else {
+                            "會下載大約 100 MB。這台電腦沒辦法自己重新啟動服務，裝好後要到電腦上" +
+                                "手動重啟一次才會生效。"
+                        },
+                        color = Palette.Danger, fontSize = Type.Meta, lineHeight = Type.MetaLine,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PillButton("算了") { arming = false }
+                        PillButton("確定更新", danger = true, loading = starting) {
+                            arming = false
+                            starting = true
+                            scope.launch {
+                                client.updateSdk()
+                                    .onSuccess { err = null }
+                                    .onFailure { err = humanError(it) }
+                                starting = false
+                                reload++
+                            }
+                        }
+                    }
+                }
+            }
+            s != null -> Text("已經是最新版。", color = Palette.TextFaint, fontSize = Type.Meta)
+        }
+        err?.let { Text(it, color = Palette.Danger, fontSize = Type.Meta) }
+    }
     }
 }
 

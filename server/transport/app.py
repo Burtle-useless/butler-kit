@@ -23,6 +23,7 @@ import config
 from courses import workspaces as course_workspaces
 from engine import client_pool, location, ports, profiles, titles
 from engine import models as model_catalog
+from engine import sdk_update
 from engine import state as state_mod
 from engine.worker import Worker
 
@@ -79,8 +80,12 @@ worker = Worker(frontend_for, autoname=_autoname)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     reaper = asyncio.create_task(client_pool.reaper())
-    # 沒有模型清單快取就先去要一次，不等第一則訊息（背景跑，不擋啟動）
+    # 模型清單：沒有快取就先去要一次、官方清單過期就更新，不等第一則訊息（背景跑，不擋啟動）
     boot_models = asyncio.create_task(model_catalog.bootstrap())
+    # 上次從手機更新 SDK 時改名讓位的舊 CLI，現在沒人開著了就刪掉（一支兩百多 MB）
+    gone = await asyncio.to_thread(sdk_update.cleanup_parked)
+    if gone:
+        print(f"[butler] 清掉 {gone} 個更新前留下的舊 CLI", flush=True)
     # 上次限流等待中被重啟弄丟的訊息，重新排回去
     n = await worker.restore_pending()
     if n:

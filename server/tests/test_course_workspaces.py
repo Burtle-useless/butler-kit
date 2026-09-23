@@ -49,28 +49,28 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 
 
 PERIODS = [
-    {"no": 1, "start": "08:30", "end": "09:20"},
-    {"no": 2, "start": "09:25", "end": "10:15"},
-    {"no": 3, "start": "10:25", "end": "11:15"},
-    {"no": 4, "start": "11:20", "end": "12:10"},
-    {"no": 5, "start": "13:30", "end": "14:20"},
-    {"no": 6, "start": "14:25", "end": "15:15"},
+    {"no": 1, "start": "08:10", "end": "09:00"},
+    {"no": 2, "start": "09:10", "end": "10:00"},
+    {"no": 3, "start": "10:10", "end": "11:00"},
+    {"no": 4, "start": "11:10", "end": "12:00"},
+    {"no": 5, "start": "13:10", "end": "14:00"},
+    {"no": 6, "start": "14:10", "end": "15:00"},
 ]
 
 # 一份課表：兩門有資料夾（手建的短名）、三門沒有
 AGENDA = {
     "courses": [
-        {"id": "c1", "name": "微積分（一）", "day": 2, "from_period": 1, "to_period": 1,
+        {"id": "c1", "name": "微積分（一）", "day": 1, "from_period": 2, "to_period": 2,
          "teacher": "陳老師", "room": "A203", "note": "必修"},
-        {"id": "c2", "name": "微積分（一）", "day": 3, "from_period": 5, "to_period": 6,
+        {"id": "c2", "name": "微積分（一）", "day": 4, "from_period": 5, "to_period": 6,
          "teacher": "陳老師", "room": "A203", "note": "必修"},
-        {"id": "c3", "name": "通識：生活中的天文學", "day": 2, "from_period": 5,
-         "to_period": 6, "teacher": "", "room": "", "note": ""},
-        {"id": "c4", "name": "資料結構", "day": 2, "from_period": 2, "to_period": 4,
+        {"id": "c3", "name": "通識：生活中的天文學", "day": 0, "from_period": 3,
+         "to_period": 4, "teacher": "", "room": "", "note": ""},
+        {"id": "c4", "name": "資料結構", "day": 3, "from_period": 2, "to_period": 4,
          "teacher": "王大明", "room": "C101", "note": "選修 2 學分"},
-        {"id": "c5", "name": "線性代數", "day": 4, "from_period": 5, "to_period": 6,
+        {"id": "c5", "name": "線性代數", "day": 1, "from_period": 5, "to_period": 6,
          "teacher": "", "room": "", "note": ""},
-        {"id": "c6", "name": "體育（二）", "day": 4, "from_period": 3, "to_period": 4,
+        {"id": "c6", "name": "體育（二）", "day": 2, "from_period": 5, "to_period": 6,
          "teacher": "", "room": "體育館", "note": ""},
     ],
     "periods": PERIODS,
@@ -130,7 +130,7 @@ def test_sync() -> None:
     check("index 標題是課名", idx["title"] == "資料結構", idx["title"])
     check("老師教室備註", idx["info"].get("老師") == "王大明" and idx["info"].get("教室") == "C101"
           and idx["info"].get("備註") == "選修 2 學分", str(idx["info"]))
-    check("時段帶節次與時間", idx["info"].get("時段") == "週三 第2-4節（09:25-12:10）",
+    check("時段帶節次與時間", idx["info"].get("時段") == "週四 第2-4節（09:10-12:00）",
           idx["info"].get("時段", ""))
     check("理解進度表在（空的）", idx["progress"] == [] and idx["counts"] == {"懂": 0, "半懂": 0, "不會": 0})
     log_md = (ROOT / "資料結構" / "log.md").read_text(encoding="utf-8")
@@ -241,7 +241,7 @@ def test_switch() -> None:
     check("面板看得到封存過哪學期", semester.status()["archived"] == ["115-1"])
 
     # 下學期又有「微積分」：開新的資料夾，不會接上學期的
-    store.add_course(name="微積分（二）", day=2, from_period=1)
+    store.add_course(name="微積分（二）", day=1, from_period=1)
     workspaces.sync()
     check("下學期的課開新資料夾", [d.name for d in workspaces.course_dirs()] == ["微積分二"])
 

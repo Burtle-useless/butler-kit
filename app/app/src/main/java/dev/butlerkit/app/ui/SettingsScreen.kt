@@ -56,7 +56,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsScreen(state: ChatState, prefs: Prefs, client: ButlerClient,
                    onLoad: () -> Unit, onApply: (String?, String?) -> Unit,
-                   onSetCwd: suspend (String) -> Result<Unit>) {
+                   onSetCwd: suspend (String) -> Result<Unit>,
+                   onOpenTools: () -> Unit = {}) {
     LaunchedEffect(Unit) { onLoad() }
     val s = state.settings
 
@@ -78,24 +79,29 @@ fun SettingsScreen(state: ChatState, prefs: Prefs, client: ButlerClient,
             if (s == null) {
                 Text("讀取中…", color = Palette.TextFaint, fontSize = Type.Meta)
             } else {
-                // 跟對話面板同一個選擇器（ModelPicker.kt）：官方顯示名＋說明，
-                // 思考強度依模型給。這裡選的是帳號預設，沒單獨覆寫的對話都吃它
+                // 跟對話頂欄模型鈕同一個面板（ModelPicker.kt）。這裡選的是帳號預設，
+                // 沒單獨覆寫的對話都吃它；沒設就是伺服器的內建預設（DEFAULT_MODEL，
+                // 通常是官方別名 default＝官方建議的那顆）
                 var pick by remember { mutableStateOf(false) }
                 ModelSummaryRow(
-                    modelText = s.model?.let { modelDisplay(it, s.infos) } ?: "內建預設",
-                    effortText = s.effort ?: "預設",
+                    modelText = s.model?.let { modelDisplay(it, s.infos) }
+                        ?: (followLabel(s.builtinModel) + "（" +
+                            // 清單裡對不到（清單還沒到）就別把 default 這種原始值印出來
+                            (s.infos.firstOrNull { it.matches(s.builtinModel) }?.name
+                                ?: "由 Claude Code 決定") + "）"),
+                    effortText = s.effort?.let { effortLabel(it) } ?: "預設",
                 ) { pick = true }
                 if (pick) {
                     ModelPickerSheet(
                         infos = s.infos,
-                        efforts = s.efforts,
+                        scope = PickScope.Account,
                         selectedModel = s.model.orEmpty(),
                         selectedEffort = s.effort.orEmpty(),
-                        followLabel = "內建預設",
-                        effectiveModel = "",
-                        effectiveEffort = "",
+                        followModel = s.builtinModel,
+                        followEffort = "",
                         onPickModel = { onApply(it.takeIf { v -> v.isNotBlank() }, s.effort) },
                         onPickEffort = { onApply(s.model, it.takeIf { v -> v.isNotBlank() }) },
+                        onNeedUpdate = onOpenTools,
                         onDismiss = { pick = false },
                     )
                 }
