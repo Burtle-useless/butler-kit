@@ -27,6 +27,8 @@ from test_runner_reliability import (  # noqa: E402
     make_state, result_msg,
 )
 
+from claude_agent_sdk import ResultMessage  # noqa: E402
+
 from engine import runner as runner_mod  # noqa: E402
 from engine.mailbox import MailboxClosed  # noqa: E402
 
@@ -97,11 +99,78 @@ async def test_interrupt_fails_falls_back_to_timeout() -> None:
     check("沒有每輪重打", client.interrupts <= 2, str(client.interrupts))
 
 
+def error_result_msg() -> ResultMessage:
+    """被 interrupt 的週期實際收出的 Result：subtype=error_during_execution、is_error。"""
+    return ResultMessage(
+        subtype="error_during_execution", duration_ms=1, duration_api_ms=1,
+        is_error=True, num_turns=1, session_id="sid-1", result=None,
+    )
+
+
+async def test_ask_interrupt_error_result_not_failure() -> None:
+    print("\n[ASK 打斷後收到 error_during_execution → 照常收工，不是失敗]")
+    # 真實 CLI 被 interrupt 時收出的是 is_error 的 Result，不是 success。
+    # 打斷是我們自己要的，這一輪寫好的回覆與選項卡不能因此作廢。
+    client, inbox, drops = install(
+        [assistant_msg(ASK)],
+        on_interrupt=[error_result_msg(), MailboxClosed()],
+    )
+    try:
+        with fast_timeouts(idle=30, tool=30):
+            res = await asyncio.wait_for(
+                runner_mod.run_turn("幫我決定", make_state(), SilentFrontend(), "ask-5"),
+                timeout=5)
+    except Exception as e:     # 修之前會在這裡拿到 CCError(EXEC_ERROR)
+        res = None
+        print(f"    run_turn 拋出 {type(e).__name__}: {e}")
+    check("有 interrupt", client.interrupts == 1, str(client.interrupts))
+    check("回覆保留下來", res is not None and "要選哪一個" in res.reply,
+          res.reply if res else "None")
+
+
+async def test_orphan_cycle_not_interrupted_by_previous_ask() -> None:
+    """2026-10-10 實錄：回合回覆帶 ASK 正常收出 Result，同時有一則插話
+    撲空，CLI 另開週期去回它。主迴圈看到 ask_pending 就 interrupt，打斷的是那個在回
+    新訊息的孤兒週期 → error_during_execution → 整個回合判失敗，第一輪的回覆跟選項全丟。"""
+    print("\n[撲空孤兒週期不能被前一輪的 ASK 打斷]")
+    client, inbox, drops = install(
+        [], on_interrupt=[error_result_msg(), MailboxClosed()])
+
+    async def cli() -> None:
+        while "test" not in runner_mod._steerable:
+            await asyncio.sleep(0.01)
+        # 下面全部同步做完、中間不讓出：插話記帳、模型帶 ASK 收尾、孤兒週期開頭
+        await runner_mod.try_steer("test", "再補一個問題")
+        inbox.push(assistant_msg(ASK))
+        inbox.push(result_msg(ASK))
+        await asyncio.sleep(0.5)          # 孤兒週期的模型在想，期間主迴圈輪詢好幾輪
+        inbox.push(assistant_msg("補充回答"))
+        inbox.push(result_msg("補充回答"))
+        inbox.push(MailboxClosed())
+
+    feeder = asyncio.create_task(cli())
+    try:
+        with fast_timeouts(idle=30, tool=30):
+            res = await asyncio.wait_for(
+                runner_mod.run_turn("幫我決定", make_state(), SilentFrontend(), "ask-6"),
+                timeout=5)
+    except Exception as e:     # 修之前會在這裡拿到 CCError(EXEC_ERROR)
+        res = None
+        print(f"    run_turn 拋出 {type(e).__name__}: {e}")
+    finally:
+        feeder.cancel()
+    check("孤兒週期沒被打斷", client.interrupts == 0, str(client.interrupts))
+    check("兩段回覆都在", res is not None and "要選哪一個" in res.reply
+          and "補充回答" in res.reply, res.reply if res else "None")
+
+
 async def main() -> int:
     await test_ask_interrupts_turn()
     await test_no_marker_no_interrupt()
     await test_incomplete_marker_ignored()
     await test_interrupt_fails_falls_back_to_timeout()
+    await test_ask_interrupt_error_result_not_failure()
+    await test_orphan_cycle_not_interrupted_by_previous_ask()
     print(f"\n{'=' * 50}")
     if FAILED:
         print(f"FAILED {len(FAILED)}: {FAILED}")
